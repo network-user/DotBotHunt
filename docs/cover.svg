@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" role="img" aria-label="HoneyBot">
-  <title>HoneyBot</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" role="img" aria-label="DotBotHunt">
+  <title>DotBotHunt</title>
   <defs>
     <linearGradient id="hb-bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0a0b0d"/>
@@ -50,7 +50,7 @@
       <path d="M15 13 H33"/>
     </g>
   </svg>
-  <text x="138" y="408" font-family="Inter, Arial, sans-serif" font-size="132" font-weight="800" fill="#f3f3f1" letter-spacing="-3">.honey</text>
-  <text x="146" y="470" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700" fill="#f3f3f1">HoneyBot</text>
+  <text x="138" y="408" font-family="Inter, Arial, sans-serif" font-size="132" font-weight="800" fill="#f3f3f1" letter-spacing="-3">.hunt</text>
+  <text x="146" y="470" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="700" fill="#f3f3f1">DotBotHunt</text>
   <text x="146" y="516" font-family="Inter, Arial, sans-serif" font-size="26" fill="#a6a7ab">Записывает сессии клиентов и не исполняет команды</text>
 </svg>

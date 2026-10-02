@@ -200,7 +200,7 @@ def parse_abuse(payload: dict) -> dict:
 
 
 def _read_json(url: str, timeout: float, headers: dict[str, str] | None = None) -> dict:
-    request = Request(url, headers={"User-Agent": "HoneyBot", **(headers or {})})
+    request = Request(url, headers={"User-Agent": "DotBotHunt", **(headers or {})})
     with urlopen(request, timeout=timeout) as response:
         raw = response.read(16384)
     data = json.loads(raw.decode("utf-8", "replace"))

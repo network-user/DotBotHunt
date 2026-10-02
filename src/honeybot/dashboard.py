@@ -39,7 +39,7 @@ def _table(headers: list[str], rows: list[list[str]]) -> str:
 
 def render_home(stats: dict) -> str:
     body = [
-        "<h1>HoneyBot</h1>",
+        "<h1>DotBotHunt</h1>",
         f"<p>Сессий: {stats['sessions']}. Уникальных IP: {stats['unique_ips']}. "
         f"В Spamhaus: {stats.get('spamhaus_listed', 0)}.</p>",
         "<h2>Страны</h2>",
@@ -117,7 +117,7 @@ def render_home(stats: dict) -> str:
     html_body = "\n".join(body)
     html_body = html_body.rsplit("<h2>Последние сессии</h2>", 1)[0]
     html_body += "<h2>Последние сессии</h2>\n" + recent
-    return _page("HoneyBot", html_body)
+    return _page("DotBotHunt", html_body)
 
 
 def render_session(bundle: dict) -> str | None:
@@ -194,7 +194,7 @@ async def _handle(reader, writer, app) -> None:
     try:
         request = await read_request(reader, 4096)
         if request is None or request.method != "GET":
-            writer.write(_http(400, "Bad Request", _page("HoneyBot", "<p>Только GET.</p>")))
+            writer.write(_http(400, "Bad Request", _page("DotBotHunt", "<p>Только GET.</p>")))
             await writer.drain()
             return
         path = request.path
@@ -204,16 +204,16 @@ async def _handle(reader, writer, app) -> None:
         elif path.startswith("/session/"):
             session_id = path.removeprefix("/session/").strip("/")
             if not session_id.isalnum() or len(session_id) > 32:
-                writer.write(_http(404, "Not Found", _page("HoneyBot", "<p>Нет такой сессии.</p>")))
+                writer.write(_http(404, "Not Found", _page("DotBotHunt", "<p>Нет такой сессии.</p>")))
             else:
                 bundle = await app.store.bundle(session_id)
                 page = render_session(bundle)
                 if page is None:
-                    writer.write(_http(404, "Not Found", _page("HoneyBot", "<p>Нет такой сессии.</p>")))
+                    writer.write(_http(404, "Not Found", _page("DotBotHunt", "<p>Нет такой сессии.</p>")))
                 else:
                     writer.write(_http(200, "OK", page))
         else:
-            writer.write(_http(404, "Not Found", _page("HoneyBot", "<p>Нет такой страницы.</p>")))
+            writer.write(_http(404, "Not Found", _page("DotBotHunt", "<p>Нет такой страницы.</p>")))
         await writer.drain()
     finally:
         writer.close()

@@ -16,7 +16,7 @@ from honeybot.store import Store
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="honeybot",
-        description="HoneyBot записывает, что присылают клиенты, и не исполняет это.",
+        description="DotBotHunt записывает, что присылают клиенты, и не исполняет это.",
     )
     parser.add_argument("--config", default="config.toml", help="путь к config.toml")
     parser.add_argument("--db", default="", help="файл SQLite, по умолчанию data/honeybot.db")
@@ -67,7 +67,7 @@ def _load(args) -> object:
 async def _run(cfg) -> None:
     bot = HoneyBot(cfg)
     await bot.start()
-    print("HoneyBot слушает. Команды клиентов не исполняются. Остановка: Ctrl+C.")
+    print("DotBotHunt слушает. Команды клиентов не исполняются. Остановка: Ctrl+C.")
     for name, port in bot.bound.items():
         host = "127.0.0.1" if name == "dashboard" else "0.0.0.0"
         print(f"  {name}: {host}:{port}")

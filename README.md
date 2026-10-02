@@ -1,4 +1,4 @@
-# HoneyBot
+# DotBotHunt
 
 <p>
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat" alt="Python" />
@@ -7,7 +7,7 @@
   <!-- loc:start --><img src="https://img.shields.io/badge/lines_of_code-4153-lightgrey?style=flat" alt="4153 lines of code" /><!-- loc:end -->
 </p>
 
-<img src="docs/cover.svg" width="720" alt="HoneyBot" />
+<img src="docs/cover.svg" width="720" alt="DotBotHunt" />
 
 <!-- audit:start -->
 <p>
@@ -16,7 +16,7 @@
 </p>
 <!-- audit:end -->
 
-HoneyBot поднимает SSH, HTTP, telnet, FTP, SMTP и redis на высоких портах и пишет, что прислал клиент. Ответы выглядят как успех, строки клиента не исполняются. Страна берётся из DNS Team Cymru. Город и провайдер запрашиваются только при ключе ip-api Pro, по HTTPS.
+DotBotHunt поднимает SSH, HTTP, telnet, FTP, SMTP и redis на высоких портах и пишет, что прислал клиент. Ответы выглядят как успех, строки клиента не исполняются. Страна берётся из DNS Team Cymru. Город и провайдер запрашиваются только при ключе ip-api Pro, по HTTPS.
 
 ## Запуск
 
@@ -77,7 +77,7 @@ uv run --frozen pytest -q
 
 ## Архитектура
 
-Пакет `honeybot` на asyncio. `cli` грузит конфиг и либо поднимает `HoneyBot`, либо читает SQLite офлайн. Слушатели пишут события в `store`. Ответы собирает `reply` через файловую систему в памяти (`vfs`). Обогащение IP идёт очередью в `enrich`. `reconstruct` ставит метки сессии. Панель читает ту же базу и слушает только localhost.
+Пакет `honeybot` на asyncio. `cli` грузит конфиг и либо поднимает приманку, либо читает SQLite офлайн. Слушатели пишут события в `store`. Ответы собирает `reply` через файловую систему в памяти (`vfs`). Обогащение IP идёт очередью в `enrich`. `reconstruct` ставит метки сессии. Панель читает ту же базу и слушает только localhost.
 
 ```
 src/honeybot/

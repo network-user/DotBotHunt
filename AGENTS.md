@@ -108,7 +108,7 @@ uv.lock
 
 ## Приманка
 
-HoneyBot пишет ввод клиента и отвечает так, будто команда прошла. `reply` и `vfs` держат файлы в памяти. SQL в `store` с параметрами. Образ запускается не от root (`USER honey`). CI ставит `permissions.contents: read` и не использует `pull_request_target`.
+DotBotHunt пишет ввод клиента и отвечает так, будто команда прошла. `reply` и `vfs` держат файлы в памяти. SQL в `store` с параметрами. Образ запускается не от root (`USER honey`). CI ставит `permissions.contents: read` и не использует `pull_request_target`.
 
 ## Документация
 
