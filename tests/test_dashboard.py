@@ -31,6 +31,8 @@ async def test_dashboard_is_local_and_escapes(tmp_path):
         )
         page = await _get(bot.bound["dashboard"], "/")
         assert b"200" in page.split(b"\r\n", 1)[0]
+        assert b"Content-Security-Policy:" in page
+        assert b"frame-ancestors 'none'" in page
         assert "Сессий".encode() in page
         detail = await _get(bot.bound["dashboard"], "/session/abc123def456")
         assert b"<script>alert" not in detail

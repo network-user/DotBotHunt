@@ -180,6 +180,10 @@ def _http(status: int, reason: str, body: str) -> bytes:
         "Content-Type: text/html; charset=utf-8\r\n"
         f"Content-Length: {len(raw)}\r\n"
         "X-Content-Type-Options: nosniff\r\n"
+        "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; "
+        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\n"
+        "X-Frame-Options: DENY\r\n"
+        "Referrer-Policy: no-referrer\r\n"
         "Cache-Control: no-store\r\n"
         "Connection: close\r\n\r\n"
     )
