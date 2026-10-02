@@ -25,6 +25,25 @@ def reputation_line(info: dict) -> str:
     return ", ".join(parts) if parts else "-"
 
 
+def _plain(value: object) -> str:
+    """Текст для терминала оператора: C0/C1 не доходят до интерпретатора."""
+    text = "" if value is None else str(value)
+    out: list[str] = []
+    for char in text:
+        code = ord(char)
+        if char in "\n\t":
+            out.append(char)
+        elif code < 32:
+            out.append("^" + chr(64 + code))
+        elif code == 127:
+            out.append("^?")
+        elif 0x80 <= code <= 0x9F:
+            out.append("?")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
 def format_stats(stats: dict) -> str:
     lines = [
         f"Сессий: {stats['sessions']}",
@@ -33,30 +52,41 @@ def format_stats(stats: dict) -> str:
         "",
         "Страны:",
     ]
-    lines.extend(_rows(stats.get("top_countries") or [], lambda row: f"  {row['country']}  {row['n']}"))
+    lines.extend(
+        _rows(stats.get("top_countries") or [], lambda row: f"  {_plain(row['country'])}  {row['n']}")
+    )
     lines.append("")
     lines.append("Города:")
-    lines.extend(_rows(stats.get("top_cities") or [], lambda row: f"  {row['city']}  {row['n']}"))
+    lines.extend(_rows(stats.get("top_cities") or [], lambda row: f"  {_plain(row['city'])}  {row['n']}"))
     lines.append("")
     lines.append("Сети и провайдеры:")
-    lines.extend(_rows(stats["top_orgs"], lambda row: f"  {row['org']} AS{row['asn'] or '?'}  {row['n']}"))
+    lines.extend(
+        _rows(
+            stats["top_orgs"],
+            lambda row: f"  {_plain(row['org'])} AS{_plain(row['asn'] or '?')}  {row['n']}",
+        )
+    )
     lines.append("")
     lines.append("Порты:")
     lines.extend(
-        _rows(stats["top_ports"], lambda row: f"  {row['proto']} {row['port']}  {row['n']}")
+        _rows(stats["top_ports"], lambda row: f"  {_plain(row['proto'])} {row['port']}  {row['n']}")
     )
     lines.append("")
     lines.append("Имена:")
-    lines.extend(_rows(stats["top_usernames"], lambda row: f"  {row['username']}  {row['n']}"))
+    lines.extend(
+        _rows(stats["top_usernames"], lambda row: f"  {_plain(row['username'])}  {row['n']}")
+    )
     lines.append("")
     lines.append("Метки:")
-    lines.extend(_rows(stats["top_intents"], lambda row: f"  {row['intent']}  {row['n']}"))
+    lines.extend(_rows(stats["top_intents"], lambda row: f"  {_plain(row['intent'])}  {row['n']}"))
     lines.append("")
     lines.append("Команды:")
-    lines.extend(_rows(stats["top_commands"], lambda row: f"  {row['command']}  {row['n']}"))
+    lines.extend(
+        _rows(stats["top_commands"], lambda row: f"  {_plain(row['command'])}  {row['n']}")
+    )
     lines.append("")
     lines.append("HTTP-пути:")
-    lines.extend(_rows(stats["top_paths"], lambda row: f"  {row['path']}  {row['n']}"))
+    lines.extend(_rows(stats["top_paths"], lambda row: f"  {_plain(row['path'])}  {row['n']}"))
     lines.append("")
     lines.append("Последние сессии:")
     if not stats["recent"]:
@@ -64,7 +94,9 @@ def format_stats(stats: dict) -> str:
     else:
         for row in stats["recent"]:
             intent = row.get("primary_intent") or "открыта"
-            lines.append(f"  {row['id']}  {row['ip']}  {row['proto']}  {intent}")
+            lines.append(
+                f"  {_plain(row['id'])}  {_plain(row['ip'])}  {_plain(row['proto'])}  {_plain(intent)}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -74,21 +106,21 @@ def format_session(bundle: dict) -> str:
         return "Сессия не найдена\n"
     info = bundle.get("ip_info") or {}
     lines = [
-        f"Сессия {session['id']}",
-        f"Начало: {session.get('started_at') or ''}",
-        f"Конец: {session.get('ended_at') or 'ещё идёт'}",
+        f"Сессия {_plain(session['id'])}",
+        f"Начало: {_plain(session.get('started_at') or '')}",
+        f"Конец: {_plain(session.get('ended_at') or 'ещё идёт')}",
         (
-            f"IP: {session.get('ip')}  провайдер: {info.get('org') or 'неизвестно'}"
-            f"  ASN: {info.get('asn') or '-'}  страна: {info.get('country') or '-'}"
-            f"  город: {info.get('city') or '-'}  ISP: {info.get('isp') or '-'}"
-            f"  rdns: {info.get('rdns') or '-'}"
+            f"IP: {_plain(session.get('ip'))}  провайдер: {_plain(info.get('org') or 'неизвестно')}"
+            f"  ASN: {_plain(info.get('asn') or '-')}  страна: {_plain(info.get('country') or '-')}"
+            f"  город: {_plain(info.get('city') or '-')}  ISP: {_plain(info.get('isp') or '-')}"
+            f"  rdns: {_plain(info.get('rdns') or '-')}"
         ),
-        f"Репутация: {reputation_line(info)}",
-        f"Протокол: {session.get('proto')}  порт {session.get('dst_port')}",
-        f"Баннер клиента: {session.get('client_banner') or '-'}",
-        f"Вход: {session.get('auth_result') or 'none'}  пользователь: {session.get('username') or '-'}",
+        f"Репутация: {_plain(reputation_line(info))}",
+        f"Протокол: {_plain(session.get('proto'))}  порт {_plain(session.get('dst_port'))}",
+        f"Баннер клиента: {_plain(session.get('client_banner') or '-')}",
+        f"Вход: {_plain(session.get('auth_result') or 'none')}  пользователь: {_plain(session.get('username') or '-')}",
         f"Байт входящих: {session.get('bytes_in') or 0}  исходящих: {session.get('bytes_out') or 0}",
-        f"Итог: {session.get('summary') or 'ещё не собран'}",
+        f"Итог: {_plain(session.get('summary') or 'ещё не собран')}",
         "",
         "Попытки входа:",
     ]
@@ -98,7 +130,8 @@ def format_session(bundle: dict) -> str:
     for row in auths:
         mark = "принят как настоящий" if row.get("fake_accepted") else "отклонён"
         lines.append(
-            f"  {row.get('username') or '-'}  {row.get('method') or '-'}  {mark}  {row.get('secret') or ''}"
+            f"  {_plain(row.get('username') or '-')}  {_plain(row.get('method') or '-')}"
+            f"  {mark}  {_plain(row.get('secret') or '')}"
         )
     lines.append("")
     lines.append("Команды:")
@@ -106,16 +139,18 @@ def format_session(bundle: dict) -> str:
     if not commands:
         lines.append("  нет")
     for row in commands:
-        tags = row.get("tags") or ""
+        tags = _plain(row.get("tags") or "")
         suffix = f"  [{tags}]" if tags else ""
-        lines.append(f"  {row.get('raw')}{suffix}")
+        lines.append(f"  {_plain(row.get('raw'))}{suffix}")
     lines.append("")
     lines.append("HTTP:")
     http_rows = bundle.get("http") or []
     if not http_rows:
         lines.append("  нет")
     for row in http_rows:
-        lines.append(f"  {row.get('method')} {row.get('path')}  {row.get('status_sent')}")
+        lines.append(
+            f"  {_plain(row.get('method'))} {_plain(row.get('path'))}  {_plain(row.get('status_sent'))}"
+        )
     return "\n".join(lines) + "\n"
 
 

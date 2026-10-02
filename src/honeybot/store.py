@@ -105,6 +105,7 @@ class Store:
         self._conn.executescript(_SCHEMA)
         self._ensure_ip_columns()
         self._conn.commit()
+        self._tighten()
         self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -271,12 +272,22 @@ class Store:
                     return
                 result = self._handle(op)
                 self._conn.commit()
+                self._tighten()
                 if not future.done():
                     future.set_result(result)
             except Exception as exc:
                 self._conn.rollback()
                 if not future.done():
                     future.set_exception(exc)
+
+    def _tighten(self) -> None:
+        for suffix in ("", "-wal", "-shm"):
+            candidate = Path(str(self.path) + suffix) if suffix else self.path
+            try:
+                if candidate.exists():
+                    candidate.chmod(0o600)
+            except OSError:
+                continue
 
     def _over_cap(self) -> bool:
         total = 0

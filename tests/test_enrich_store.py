@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import stat
+
 from honeybot.config import ConfigError, default_config, validate
 from honeybot.enrich import (
     enrich_ip,
@@ -142,3 +145,61 @@ async def test_stats_omit_secrets_session_keeps_them(tmp_path):
         assert "libssh2" in detail
     finally:
         await store.stop()
+    if os.name != "nt":
+        mode = stat.S_IMODE((tmp_path / "t.db").stat().st_mode)
+        assert mode == 0o600
+
+
+def test_reports_neutralize_terminal_controls():
+    stats = {
+        "sessions": 1,
+        "unique_ips": 1,
+        "spamhaus_listed": 0,
+        "top_countries": [{"country": "US\x1b[2J", "n": 1}],
+        "top_cities": [],
+        "top_orgs": [{"org": "Example", "asn": "1", "n": 1}],
+        "top_ports": [{"proto": "ssh", "port": 22, "n": 1}],
+        "top_usernames": [],
+        "top_intents": [],
+        "top_commands": [{"command": "id\x1b[0m", "n": 1}],
+        "top_paths": [],
+        "recent": [],
+    }
+    text = format_stats(stats)
+    assert "\x1b" not in text
+    assert "US^[" in text
+    bundle = {
+        "session": {
+            "id": "abc123",
+            "started_at": "t",
+            "ended_at": "t",
+            "ip": "203.0.113.9",
+            "proto": "ssh",
+            "dst_port": 22,
+            "client_banner": "SSH\x1b[2J",
+            "auth_result": "fake_accept",
+            "username": "root",
+            "bytes_in": 1,
+            "bytes_out": 1,
+            "summary": "ok",
+        },
+        "ip_info": {
+            "org": "Example",
+            "asn": "1",
+            "country": "US",
+            "city": "",
+            "isp": "",
+            "rdns": "a\x1b]0;x\x07b",
+        },
+        "auths": [
+            {"username": "root", "method": "password", "fake_accepted": 1, "secret": "s3cr3t"}
+        ],
+        "commands": [{"raw": "uname\x1b[31m", "tags": "recon_host"}],
+        "http": [],
+    }
+    detail = format_session(bundle)
+    assert "\x1b" not in detail
+    assert "s3cr3t" in detail
+    assert "uname^[" in detail
+    assert "a^[" in detail
+
