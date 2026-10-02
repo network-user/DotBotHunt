@@ -1,0 +1,65 @@
+order = [
+  "banner_grab",
+  "auth_guess",
+  "unclassified",
+  "web_login_probe",
+  "web_secret_probe",
+  "recon_host",
+  "cleanup",
+  "abuse_verb",
+  "persistence",
+  "miner",
+  "fetch_and_run",
+]
+
+[summary]
+banner_grab = "Клиент открыл соединение и закрыл его, не пытаясь войти."
+auth_guess = "Клиент подбирал имя и пароль и не прислал команд."
+unclassified = "Клиент прислал команды, которые не попали ни в одну известную метку."
+web_login_probe = "Клиент открывал страницу входа. Учётная запись ни к чему на машине не привязана."
+web_secret_probe = "Клиент запрашивал файл, где на живом сайте часто лежат секреты. Такого файла здесь нет."
+recon_host = "После входа клиент смотрел параметры системы."
+cleanup = "Клиент пытался стереть историю команд. Запись приманки от этого не удаляется."
+abuse_verb = "Клиент прислал команду, которая на настоящей службе меняет роль процесса. Здесь она отвергнута."
+persistence = "Клиент пытался оставить себе повторный вход. На этой машине ничего не изменено."
+miner = "В командах есть признаки майнера. Ничего не запускалось."
+fetch_and_run = "Клиент прислал команду скачивания в оболочку. Она не исполнялась и файл не скачивался."
+
+[[rule]]
+tag = "recon_host"
+kind = "text"
+needles = ["uname", "cpuinfo", "lscpu", "whoami", "df ", "free", "nproc"]
+
+[[rule]]
+tag = "cleanup"
+kind = "text"
+needles = ["history -c", "bash_history", "histfile"]
+
+[[rule]]
+tag = "abuse_verb"
+kind = "text"
+needles = ["slaveof", "replicaof", "module load", "config set", "config rewrite", "direct-tcpip"]
+
+[[rule]]
+tag = "persistence"
+kind = "text"
+needles = ["crontab", "authorized_keys", "rc.local", "systemctl enable", "useradd"]
+
+[[rule]]
+tag = "miner"
+kind = "text"
+needles = ["xmrig", "stratum+tcp", "stratum+ssl"]
+
+[[rule]]
+tag = "fetch_and_run"
+kind = "fetch"
+
+[[rule]]
+tag = "web_secret_probe"
+kind = "path"
+needles = [".env", ".git", "wp-config", "server-status"]
+
+[[rule]]
+tag = "web_login_probe"
+kind = "path"
+needles = ["wp-login", "phpmyadmin", "/admin"]

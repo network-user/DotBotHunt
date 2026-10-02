@@ -1,0 +1,10 @@
+.venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+*.db
+*.db-wal
+*.db-shm
+data/
+GeoLite*.mmdb
+config.toml

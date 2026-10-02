@@ -1,0 +1,56 @@
+# HoneyBot слушает высокие порты, чтобы подняться без прав администратора.
+# На VPS проброс 22, 80, 23, 21 и 25 на эти порты делается файрволом снаружи.
+# Программа правила файрвола не меняет.
+# Панель статистики только на 127.0.0.1. Команды клиентов не исполняются.
+
+[limits]
+max_conn_per_ip = 30
+max_global = 200
+session_seconds = 90
+max_line_bytes = 8192
+max_http_body = 65536
+max_db_mb = 512
+
+[enrich]
+dns_timeout_seconds = 2
+cache_hours = 24
+dns_server = "1.1.1.1"
+# mmdb_city = "GeoLite2-City.mmdb"
+# Страна берётся из ответа Team Cymru. Город и ISP спрашиваются у ip-api.com.
+# Без ключа это HTTP. С ключом Pro запрос идёт на pro.ip-api.com по HTTPS.
+enable_geo = true
+ip_api_key = ""
+enable_spamhaus = true
+# Пустая строка выключает AbuseIPDB. Ключ пиши в config.toml, не в этот пример.
+abuseipdb_api_key = ""
+
+[dashboard]
+enabled = true
+host = "127.0.0.1"
+port = 8787
+
+[listeners.ssh]
+enabled = true
+port = 2222
+fail_before_accept = 0
+
+[listeners.http]
+enabled = true
+port = 8080
+
+[listeners.telnet]
+enabled = true
+port = 2323
+fail_before_accept = 0
+
+[listeners.ftp]
+enabled = true
+port = 2121
+
+[listeners.smtp]
+enabled = true
+port = 2525
+
+[listeners.redis]
+enabled = true
+port = 6379

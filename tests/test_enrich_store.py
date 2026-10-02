@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+from honeybot.config import ConfigError, default_config, validate
+from honeybot.enrich import (
+    enrich_ip,
+    interpret_spamhaus,
+    parse_abuse,
+    parse_geo,
+    parse_origin,
+    reverse_origin,
+)
+from honeybot.limits import Limiter
+from honeybot.reconstruct import normalize, reconstruct
+from honeybot.report import format_session, format_stats
+from honeybot.store import Store
+
+
+def test_origin_name_is_reversed():
+    assert reverse_origin("203.0.113.5") == "5.113.0.203.origin.asn.cymru.com"
+    assert parse_origin("15169 | 8.8.8.0/24 | US | arin | 1992-12-01") == (
+        "15169",
+        "8.8.8.0/24",
+        "US",
+    )
+
+
+async def test_enrich_uses_injected_dns_only():
+    called = []
+
+    async def txt(name, timeout):
+        called.append(name)
+        if "origin" in name:
+            return "64496 | 203.0.113.0/24 | US | arin | 2000-01-01"
+        return "64496 | US | arin | 2000-01-01 | Example Hosting, US"
+
+    async def rdns(ip, timeout):
+        called.append(ip)
+        return "scanner.example"
+
+    async def geo(ip, timeout):
+        return {"country": "Нидерланды", "city": "Амстердам", "isp": "Example ISP"}
+
+    async def spamhaus(ip, timeout):
+        return "listed"
+
+    async def abuse(ip, timeout):
+        return {"abuse_score": 80, "abuse_reports": 4}
+
+    info = await enrich_ip(
+        "8.8.8.8",
+        1,
+        txt,
+        rdns,
+        geo_query=geo,
+        spamhaus_query=spamhaus,
+        abuse_query=abuse,
+    )
+    assert info["asn"] == "64496"
+    assert info["org"] == "Example Hosting, US"
+    assert info["country"] == "Нидерланды"
+    assert info["city"] == "Амстердам"
+    assert info["isp"] == "Example ISP"
+    assert info["spamhaus"] == "listed"
+    assert info["abuse_score"] == 80
+    assert info["rdns"] == "scanner.example"
+    local = await enrich_ip("127.0.0.1", 1, txt, rdns)
+    assert local["org"] == "local"
+    assert called[0] == "8.8.8.8"
+
+
+def test_reputation_parsers():
+    assert interpret_spamhaus(["127.0.0.4"]) == "listed"
+    assert interpret_spamhaus(["127.0.0.1"]) == "clean"
+    assert interpret_spamhaus(["127.255.255.254"]) == "unknown"
+    assert parse_geo({"status": "success", "country": "Германия", "city": "Берлин", "isp": "X"})[
+        "city"
+    ] == "Берлин"
+    assert parse_geo({"status": "fail"}) == {}
+    assert parse_abuse({"data": {"abuseConfidenceScore": 15, "totalReports": 2}}) == {
+        "abuse_score": 15,
+        "abuse_reports": 2,
+    }
+
+
+def test_dashboard_host_is_locked():
+    cfg = default_config()
+    cfg.dashboard.host = "0.0.0.0"
+    try:
+        validate(cfg)
+    except ConfigError as exc:
+        assert "127.0.0.1" in str(exc)
+    else:
+        raise AssertionError("панель на 0.0.0.0 не должна проходить проверку")
+
+
+def test_limiter_drops_extra():
+    limiter = Limiter(1, 2)
+    assert limiter.try_acquire("a")
+    assert not limiter.try_acquire("a")
+    limiter.release("a")
+    assert limiter.try_acquire("a")
+    assert limiter.try_acquire("b")
+    assert not limiter.try_acquire("c")
+
+
+async def test_stats_omit_secrets_session_keeps_them(tmp_path):
+    store = Store(tmp_path / "t.db", 8)
+    await store.start()
+    try:
+        assert await store.open_session("abc123", "203.0.113.9", 40000, 22, "ssh")
+        await store.add_auth("abc123", "root", "s3cr3t", "password", True)
+        await store.add_command("abc123", "uname -a", "exec", normalize("uname -a"), 0)
+        await store.upsert_ip(
+            {
+                "ip": "203.0.113.9",
+                "rdns": "scanner.example",
+                "asn": "64496",
+                "prefix": "203.0.113.0/24",
+                "org": "Example Hosting",
+                "country": "US",
+            }
+        )
+        bundle = await store.bundle("abc123")
+        result = reconstruct(bundle)
+        await store.finish(
+            "abc123",
+            result.primary,
+            result.summary,
+            result.command_tags,
+            result.http_tags,
+            bytes_in=10,
+            bytes_out=20,
+            banner="SSH-2.0-libssh2",
+        )
+        text = format_stats(await store.stats())
+        assert "s3cr3t" not in text
+        assert "Example Hosting" in text
+        assert "US" in text
+        assert "recon_host" in text
+        detail = format_session(await store.bundle("abc123"))
+        assert "s3cr3t" in detail
+        assert "libssh2" in detail
+    finally:
+        await store.stop()
