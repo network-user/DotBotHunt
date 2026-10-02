@@ -14,6 +14,37 @@ from honeybot.vfs import VFS
 
 log = logging.getLogger("honeybot")
 
+# Потолок на одно SSH-соединение. Перевод строки его не снимает:
+# иначе клиент копит строки в памяти, пока не кончится session_seconds.
+_MAX_SSH_LINES = 128
+_MAX_SSH_INTAKE = 256 * 1024
+
+
+def take_shell_lines(buf: str, limit: int, max_lines: int) -> tuple[str, list[str], bool]:
+    """Законченные строки, остаток и флаг «канал пора закрыть».
+
+    Слишком длинная строка обрезается до limit и закрывает канал.
+    max_lines отсчитывается от уже принятых в этой сессии строк.
+    """
+    if max_lines <= 0 or limit <= 0:
+        return "", [], True
+    lines: list[str] = []
+    while len(lines) < max_lines:
+        if "\n" not in buf:
+            if len(buf) > limit:
+                lines.append(buf[:limit])
+                return "", lines, True
+            return buf, lines, False
+        line, buf = buf.split("\n", 1)
+        line = line.rstrip("\r")
+        if len(line) > limit:
+            lines.append(line[:limit])
+            return "", lines, True
+        lines.append(line)
+    if buf:
+        return "", lines, True
+    return "", lines, False
+
 
 def load_host_key(data_dir: Path):
     path = data_dir / "ssh_host_ed25519"
@@ -36,6 +67,7 @@ class HoneySession(asyncssh.SSHServerSession):
         self.exec_command: str | None = None
         self.buf = ""
         self.mode = ""
+        self.closing = False
 
     def connection_made(self, chan) -> None:
         self.chan = chan
@@ -50,7 +82,8 @@ class HoneySession(asyncssh.SSHServerSession):
 
     def exec_requested(self, command: str) -> bool:
         self.mode = "exec"
-        self.exec_command = command
+        limit = self.server.app.cfg.limits.max_line_bytes
+        self.exec_command = command[:limit]
         return True
 
     def session_started(self) -> None:
@@ -63,19 +96,32 @@ class HoneySession(asyncssh.SSHServerSession):
 
     def data_received(self, data, datatype) -> None:
         del datatype
+        if self.closing or self.chan is None:
+            return
         text = data if isinstance(data, str) else data.decode("utf-8", "replace")
+        room = _MAX_SSH_INTAKE - self.server.intake
+        if room <= 0:
+            self._drop()
+            return
+        overflow = len(text) > room
+        if overflow:
+            text = text[:room]
+        self.server.intake += len(text)
         self.buf += text
         limit = self.server.app.cfg.limits.max_line_bytes
-        if len(self.buf) > limit and "\n" not in self.buf:
-            if self.chan is not None:
-                self.chan.close()
-            return
-        lines: list[str] = []
-        while "\n" in self.buf:
-            line, self.buf = self.buf.split("\n", 1)
-            lines.append(line.rstrip("\r"))
+        left = _MAX_SSH_LINES - self.server.line_count
+        self.buf, lines, close = take_shell_lines(self.buf, limit, left)
+        self.server.line_count += len(lines)
         if lines:
             self.server.spawn(self._run_lines(lines))
+        if close or overflow or self.server.line_count >= _MAX_SSH_LINES:
+            self._drop()
+
+    def _drop(self) -> None:
+        self.closing = True
+        self.buf = ""
+        if self.chan is not None:
+            self.chan.close()
 
     async def _run_remote(self) -> None:
         command = self.exec_command or ""
@@ -93,15 +139,15 @@ class HoneySession(asyncssh.SSHServerSession):
         async with self.server.lock:
             for line in lines:
                 if not line.strip():
-                    if self.chan is not None:
+                    if self.chan is not None and not self.closing:
                         text = prompt(self.server.vfs_for())
                         self.server.bytes_out += len(text)
                         self.chan.write(text)
                     continue
                 reply = respond(self.server.vfs_for(), line)
                 await self.server.write_command(line, "shell", reply.exit_code)
-                if self.chan is None:
-                    return
+                if self.closing or self.chan is None:
+                    continue
                 if reply.stdout:
                     self.server.bytes_out += len(reply.stdout)
                     self.chan.write(reply.stdout)
@@ -133,6 +179,8 @@ class HoneySSHServer(asyncssh.SSHServer):
         self.shutting = False
         self.bytes_in = 0
         self.bytes_out = 0
+        self.line_count = 0
+        self.intake = 0
         self.timer = None
 
     def vfs_for(self) -> VFS:
