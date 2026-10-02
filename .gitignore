@@ -8,3 +8,14 @@ __pycache__/
 data/
 GeoLite*.mmdb
 config.toml
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+credentials*
+secrets.json
+ssh_host_*
