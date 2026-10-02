@@ -6,6 +6,7 @@ import stat
 from honeybot.config import ConfigError, default_config, validate
 from honeybot.enrich import (
     enrich_ip,
+    fetch_geo,
     interpret_spamhaus,
     parse_abuse,
     parse_geo,
@@ -69,6 +70,41 @@ async def test_enrich_uses_injected_dns_only():
     local = await enrich_ip("127.0.0.1", 1, txt, rdns)
     assert local["org"] == "local"
     assert called[0] == "8.8.8.8"
+
+
+def test_fetch_geo_without_key_stays_offline(monkeypatch):
+    def explode(request, timeout):
+        raise AssertionError(getattr(request, "full_url", request))
+
+    monkeypatch.setattr("honeybot.enrich.urlopen", explode)
+    assert fetch_geo("203.0.113.5", 1, "") == {}
+    assert fetch_geo("203.0.113.5", 1, "   ") == {}
+
+
+def test_fetch_geo_with_key_uses_https_only(monkeypatch):
+    seen = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, limit):
+            del limit
+            return b'{"status":"success","country":"US","city":"X","isp":"Y"}'
+
+    def fake_open(request, timeout):
+        del timeout
+        seen["url"] = request.full_url
+        return _Response()
+
+    monkeypatch.setattr("honeybot.enrich.urlopen", fake_open)
+    parsed = fetch_geo("203.0.113.5", 1, "pro-key")
+    assert seen["url"].startswith("https://pro.ip-api.com/json/203.0.113.5?")
+    assert "http://" not in seen["url"]
+    assert parsed["city"] == "X"
 
 
 def test_reputation_parsers():

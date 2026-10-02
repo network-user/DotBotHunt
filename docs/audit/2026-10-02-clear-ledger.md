@@ -1,5 +1,3 @@
-> Последний прогон: clear-ledger · 2026-10-02. Снимок: [2026-10-02-clear-ledger.md](2026-10-02-clear-ledger.md) · история: [docs/audit/](.)
-
 # Security Audit · Clear Ledger · 2026-10-02
 
 | Поле | Значение |

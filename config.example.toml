@@ -16,8 +16,8 @@ dns_timeout_seconds = 2
 cache_hours = 24
 dns_server = "1.1.1.1"
 # mmdb_city = "GeoLite2-City.mmdb"
-# Страна берётся из ответа Team Cymru. Город и ISP спрашиваются у ip-api.com.
-# Без ключа это HTTP. С ключом Pro запрос идёт на pro.ip-api.com по HTTPS.
+# Страна берётся из ответа Team Cymru. Город и ISP спрашиваются у ip-api
+# только при ключе Pro, по HTTPS. Без ключа этот запрос не выполняется.
 enable_geo = true
 ip_api_key = ""
 enable_spamhaus = true

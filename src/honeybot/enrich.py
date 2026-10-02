@@ -208,19 +208,18 @@ def _read_json(url: str, timeout: float, headers: dict[str, str] | None = None) 
 
 
 def fetch_geo(ip: str, timeout: float, api_key: str = "") -> dict:
-    """Город и ISP. Адрес уже проверен, в URL не попадает ничего, кроме него."""
+    """Город и ISP. Без ключа сеть не открывается: бесплатный ip-api только по HTTP."""
+    key = api_key.strip()
+    if not key:
+        return {}
     try:
         norm = normalize_ip(ip)
         ipaddress.ip_address(norm)
     except ValueError:
         return {}
-    params = {"lang": "ru", "fields": "status,country,city,isp"}
+    params = {"lang": "ru", "fields": "status,country,city,isp", "key": key}
     quoted = quote(norm, safe=".:")
-    if api_key:
-        params["key"] = api_key
-        url = f"https://pro.ip-api.com/json/{quoted}?{urlencode(params)}"
-    else:
-        url = f"http://ip-api.com/json/{quoted}?{urlencode(params)}"
+    url = f"https://pro.ip-api.com/json/{quoted}?{urlencode(params)}"
     try:
         return parse_geo(_read_json(url, timeout))
     except (URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
@@ -379,7 +378,7 @@ async def enrich_worker(app) -> None:
                 app.rdns_query,
                 settings.mmdb_city,
                 spamhaus_query=system_spamhaus if settings.enable_spamhaus else None,
-                geo_query=geo_query if settings.enable_geo else None,
+                geo_query=geo_query if settings.enable_geo and api_key else None,
                 abuse_query=abuse_query if abuse_key else None,
             )
             await app.store.upsert_ip(info)

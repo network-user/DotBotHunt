@@ -7,10 +7,11 @@ name = "honeybot"
 version = "0.1.0"
 description = "Приманка: записывает действия клиентов и не исполняет их."
 requires-python = ">=3.12"
-dependencies = ["asyncssh>=2.14"]
+license = { file = "LICENSE" }
+dependencies = ["asyncssh==2.24.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
 
 [project.scripts]
 honeybot = "honeybot.cli:main"
