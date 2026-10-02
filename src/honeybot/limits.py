@@ -1,5 +1,27 @@
 from __future__ import annotations
 
+import asyncio
+
+
+class SessionClock:
+    """Простой сбрасывается от активности клиента. Потолок сессии не сдвигается."""
+
+    def __init__(self, idle_seconds: float, max_seconds: float) -> None:
+        now = asyncio.get_running_loop().time()
+        self.idle_seconds = idle_seconds
+        self.max_seconds = max_seconds
+        self.started = now
+        self.touched = now
+
+    def touch(self) -> None:
+        self.touched = asyncio.get_running_loop().time()
+
+    def expired(self) -> bool:
+        now = asyncio.get_running_loop().time()
+        if now - self.started >= self.max_seconds:
+            return True
+        return now - self.touched >= self.idle_seconds
+
 
 class Limiter:
     """Считает живые соединения. Без очереди ожидания: лишние сразу закрываются."""

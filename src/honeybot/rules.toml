@@ -8,7 +8,10 @@ order = [
   "cleanup",
   "abuse_verb",
   "persistence",
+  "busybox",
+  "webshell",
   "miner",
+  "reverse_shell",
   "fetch_and_run",
 ]
 
@@ -24,11 +27,14 @@ abuse_verb = "Клиент прислал команду, которая на н
 persistence = "Клиент пытался оставить себе повторный вход. На этой машине ничего не изменено."
 miner = "В командах есть признаки майнера. Ничего не запускалось."
 fetch_and_run = "Клиент прислал команду скачивания в оболочку. Она не исполнялась и файл не скачивался."
+busybox = "В командах есть вызов busybox. Ничего не запускалось."
+webshell = "Клиент пытался записать веб-шелл. Файл на диск не попал."
+reverse_shell = "В командах есть признаки обратной оболочки. Соединение наружу не открывалось."
 
 [[rule]]
 tag = "recon_host"
 kind = "text"
-needles = ["uname", "cpuinfo", "lscpu", "whoami", "df ", "free", "nproc"]
+needles = ["uname", "cpuinfo", "lscpu", "whoami", "df ", "free", "nproc", "ifconfig", "ip a", "shadow"]
 
 [[rule]]
 tag = "cleanup"
@@ -49,6 +55,21 @@ needles = ["crontab", "authorized_keys", "rc.local", "systemctl enable", "userad
 tag = "miner"
 kind = "text"
 needles = ["xmrig", "stratum+tcp", "stratum+ssl"]
+
+[[rule]]
+tag = "busybox"
+kind = "text"
+needles = ["busybox"]
+
+[[rule]]
+tag = "webshell"
+kind = "any"
+needles = ["<?php", "eval($_", "shell.php", "c99.php", "wso.php", "cmd.php"]
+
+[[rule]]
+tag = "reverse_shell"
+kind = "text"
+needles = ["/dev/tcp", "bash -i", "sh -i"]
 
 [[rule]]
 tag = "fetch_and_run"

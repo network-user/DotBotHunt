@@ -24,6 +24,23 @@ _ISSUE = "Ubuntu 22.04.5 LTS \\n \\l\n"
 _HOSTS = "127.0.0.1 localhost\n127.0.1.1 web-01\n"
 _OS_RELEASE = 'NAME="Ubuntu"\nVERSION="22.04.5 LTS (Jammy Jellyfish)"\nID=ubuntu\n'
 _AUTH_LOG = "sshd[812]: Server listening on 0.0.0.0 port 22.\n"
+_SHADOW = """root:!:19000:0:99999:7:::
+daemon:*:19000:0:99999:7:::
+www-data:*:19000:0:99999:7:::
+ubuntu:!:19000:0:99999:7:::
+"""
+_HISTORY = "ls\nuname -a\ncat /etc/passwd\n"
+_IP_ADDR = """1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    inet 127.0.0.1/8 scope host lo
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    inet 10.0.0.15/24 brd 10.0.0.255 scope global eth0
+"""
+_IP_ROUTE = "default via 10.0.0.1 dev eth0\n10.0.0.0/24 dev eth0 proto kernel scope link src 10.0.0.15\n"
+_IFCONFIG = """eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 10.0.0.15  netmask 255.255.255.0  broadcast 10.0.0.255
+lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0
+"""
 
 
 def _safe_user(username: str) -> str:
@@ -64,8 +81,12 @@ class VFS:
             "/proc/cpuinfo": _CPUINFO,
             "/proc/meminfo": "MemTotal:        2048000 kB\nMemFree:         1536000 kB\n",
             "/var/log/auth.log": _AUTH_LOG,
+            "/etc/shadow": _SHADOW,
+            "/root/.bash_history": _HISTORY,
+            "/home/ubuntu/.bash_history": _HISTORY,
         }
         self.dirs.add(self.home)
+        self.files[self.home + "/.bash_history"] = _HISTORY
 
     def resolve(self, path: str) -> str:
         if "\x00" in path:

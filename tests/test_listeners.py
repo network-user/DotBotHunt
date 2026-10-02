@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import socket
 
 import asyncssh
@@ -54,6 +55,10 @@ async def test_http_records_probes_without_reflection(tmp_path):
         assert "web_secret_probe" in intents
         assert "web_login_probe" in intents
         assert secret_id
+        auths = []
+        for row in (await bot.store.stats())["recent"]:
+            auths.extend((await bot.store.bundle(row["id"]))["auths"])
+        assert any(row.get("username") == "admin" and row.get("secret") == "s3cr3t" for row in auths)
     finally:
         await bot.stop()
 
@@ -63,6 +68,13 @@ async def test_redis_rejects_slaveof(tmp_path, monkeypatch):
     bot = await start_bot(tmp_path, {"redis"})
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", bot.bound["redis"])
+        writer.write(b"*2\r\n$4\r\nINFO\r\n$11\r\n203.0.113.5\r\n")
+        await writer.drain()
+        header = await reader.readline()
+        assert header.startswith(b"$")
+        info = await reader.readexactly(int(header[1:].strip()) + 2)
+        assert b"redis_version:" in info
+        assert b"203.0.113.5" not in info
         writer.write(b"*3\r\n$7\r\nSLAVEOF\r\n$11\r\n203.0.113.5\r\n$4\r\n6379\r\n")
         await writer.drain()
         error = await reader.readline()
@@ -192,7 +204,8 @@ async def test_ssh_exec_does_not_egress(tmp_path, monkeypatch):
             except asyncssh.Error:
                 pass
         assert FAKE_UNAME in (uname.stdout or "")
-        assert piped.stdout in ("", None)
+        assert "saved" in (piped.stdout or "")
+        assert FORBIDDEN_IP not in (piped.stdout or "")
         assert "Windows" not in (uname.stdout or "")
         session_id = await wait_intent(bot, "ssh")
         bundle = await bot.store.bundle(session_id)
@@ -208,6 +221,71 @@ async def test_ssh_exec_does_not_egress(tmp_path, monkeypatch):
         assert banner.startswith("SSH-2.0-")
     finally:
         await bot.stop()
+
+
+async def test_http_keeps_the_connection(tmp_path):
+    bot = await start_bot(tmp_path, {"http"})
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", bot.bound["http"])
+        writer.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        await writer.drain()
+        first = await _read_http(reader)
+        assert b"200" in first.split(b"\r\n", 1)[0]
+        assert b"keep-alive" in first.lower()
+        writer.write(b"GET /.env HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        second = await _read_http(reader)
+        assert b"404" in second
+        assert b"DB_PASSWORD" not in second
+        writer.close()
+        session_id = await wait_intent(bot, "http")
+        bundle = await bot.store.bundle(session_id)
+        paths = [row["path"] for row in bundle["http"]]
+        assert paths == ["/", "/.env"]
+    finally:
+        await bot.stop()
+
+
+async def test_smtp_plain_auth_is_decoded(tmp_path):
+    bot = await start_bot(tmp_path, {"smtp"})
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", bot.bound["smtp"])
+        assert (await reader.readline()).startswith(b"220")
+        token = base64.b64encode(b"\x00alice\x00s3cr3t")
+        writer.write(b"AUTH PLAIN " + token + b"\r\nQUIT\r\n")
+        await writer.drain()
+        data = await asyncio.wait_for(reader.read(), 3)
+        writer.close()
+        assert b"235" in data
+        session_id = await wait_intent(bot, "smtp")
+        bundle = await bot.store.bundle(session_id)
+        assert any(
+            row["username"] == "alice" and row["secret"] == "s3cr3t" for row in bundle["auths"]
+        )
+        text = format_stats(await bot.store.stats())
+        assert "s3cr3t" not in text
+    finally:
+        await bot.stop()
+
+
+async def _read_http(reader) -> bytes:
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = await asyncio.wait_for(reader.read(1024), 3)
+        if not chunk:
+            break
+        buf += chunk
+    head, _, rest = buf.partition(b"\r\n\r\n")
+    length = 0
+    for line in head.split(b"\r\n"):
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":", 1)[1].strip())
+    while len(rest) < length:
+        chunk = await asyncio.wait_for(reader.read(length - len(rest)), 3)
+        if not chunk:
+            break
+        rest += chunk
+    return head + b"\r\n\r\n" + rest[:length]
 
 
 async def _http(port: int, payload: bytes) -> bytes:

@@ -11,6 +11,7 @@ from honeybot.enrich import (
     parse_abuse,
     parse_geo,
     parse_origin,
+    place_from_mmdb,
     reverse_origin,
 )
 from honeybot.limits import Limiter
@@ -119,6 +120,23 @@ def test_reputation_parsers():
         "abuse_score": 15,
         "abuse_reports": 2,
     }
+
+
+def test_place_from_mmdb_without_file_is_empty():
+    assert place_from_mmdb("", "203.0.113.5") == ("", "")
+    assert place_from_mmdb("no-such-file.mmdb", "203.0.113.5") == ("", "")
+
+
+def test_session_ceiling_is_at_least_idle():
+    cfg = default_config()
+    cfg.limits.max_session_seconds = 10
+    cfg.limits.session_seconds = 90
+    try:
+        validate(cfg)
+    except ConfigError as exc:
+        assert "max_session_seconds" in str(exc)
+    else:
+        raise AssertionError("потолок короче простоя не должен проходить проверку")
 
 
 def test_dashboard_host_is_locked():

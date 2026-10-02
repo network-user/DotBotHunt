@@ -4,15 +4,15 @@
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?style=flat" alt="Python" />
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-555?style=flat" alt="Platform" />
   <img src="https://img.shields.io/badge/Category-CLI-orange?style=flat" alt="Category" />
-  <!-- loc:start --><img src="https://img.shields.io/badge/lines_of_code-4153-lightgrey?style=flat" alt="4153 lines of code" /><!-- loc:end -->
+  <!-- loc:start --><img src="https://img.shields.io/badge/lines_of_code-5404-lightgrey?style=flat" alt="5404 lines of code" /><!-- loc:end -->
 </p>
 
 <img src="docs/cover.svg" width="720" alt="DotBotHunt" />
 
 <!-- audit:start -->
 <p>
-  <a href="docs/audit/latest.md"><img src="https://img.shields.io/badge/security_audit-passed-3fb950?style=flat" alt="security audit passed - full, leaks + code" /></a>
-  <a href="docs/audit/2026-10-02-clear-ledger.md"><img src="https://img.shields.io/badge/date-2026--10--02-555?style=flat" alt="audit date" /></a>
+  <a href="docs/audit/latest.md"><img src="https://img.shields.io/badge/security_audit-passed_with_warnings-dbab09?style=flat" alt="security audit passed with warnings - full, leaks + code" /></a>
+  <a href="docs/audit/2026-10-03-quiet-wheel.md"><img src="https://img.shields.io/badge/date-2026--10--03-555?style=flat" alt="audit date" /></a>
 </p>
 <!-- audit:end -->
 
@@ -44,8 +44,9 @@ docker build --pull -t honeybot:ci .
 | `uv sync --frozen --extra dev` | окружение по `uv.lock`, с dev-зависимостями |
 | `uv run --frozen honeybot run` | поднять приманку |
 | `uv run --frozen honeybot stats` | сводка по базе |
+| `honeybot stats --since 24h --intent miner` | срез: окно `30m`, `24h` или `7d`, и метка |
 | `uv run --frozen honeybot session <id>` | одна сессия |
-| `uv run --frozen honeybot export <path>` | сводка в JSON |
+| `uv run --frozen honeybot export <path>` | сводка в JSON, те же флаги `--since` и `--intent` |
 | `uv run --frozen honeybot rebuild` | заново проставить метки сессий |
 | `honeybot --config <path>` | конфиг, по умолчанию `config.toml` |
 | `honeybot --db <path>` | файл SQLite, по умолчанию `data/honeybot.db` |
@@ -77,7 +78,7 @@ uv run --frozen pytest -q
 
 ## Архитектура
 
-Пакет `honeybot` на asyncio. `cli` грузит конфиг и либо поднимает приманку, либо читает SQLite офлайн. Слушатели пишут события в `store`. Ответы собирает `reply` через файловую систему в памяти (`vfs`). Обогащение IP идёт очередью в `enrich`. `reconstruct` ставит метки сессии. Панель читает ту же базу и слушает только localhost.
+Пакет `honeybot` на asyncio. `cli` грузит конфиг и либо поднимает приманку, либо читает SQLite офлайн. Слушатели пишут события в `store`. Ответы собирает `reply` через файловую систему в памяти (`vfs`). Обогащение IP идёт очередью в `enrich`. `reconstruct` ставит метки сессии. Панель читает ту же базу и слушает только localhost. `session_seconds` - простой, `max_session_seconds` - потолок сессии. При лимите базы удаляются самые старые сессии.
 
 ```
 src/honeybot/
@@ -98,7 +99,7 @@ src/honeybot/
     └── line.py
 ```
 
-- **Не исполняет ввод.** Команды, HTTP и строки протоколов пишутся в SQLite. `eval`, `exec` и `subprocess` в пакете запрещены тестом.
+- **Не исполняет ввод.** Команды, HTTP и строки протоколов пишутся в SQLite. В строке с `|` или `;` ответ строится только по первой команде, хвост не запускается. `eval`, `exec` и `subprocess` в пакете запрещены тестом.
 - **Сеть наружу только для обогащения.** DNS: Team Cymru и Spamhaus. Город и ISP: HTTPS `pro.ip-api.com`, только если задан `ip_api_key`. AbuseIPDB: только если задан `abuseipdb_api_key`. `urllib` разрешён только в `enrich.py`.
 - **Панель локальная.** `dashboard.host` может быть только `127.0.0.1`.
 - **Высокие порты.** Слушатели на `0.0.0.0`. Файрвол программа не меняет.

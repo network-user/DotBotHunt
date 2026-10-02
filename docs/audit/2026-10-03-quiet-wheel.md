@@ -1,5 +1,3 @@
-> Последний прогон: quiet-wheel · 2026-10-03. Снимок: [2026-10-03-quiet-wheel.md](2026-10-03-quiet-wheel.md) · история: [docs/audit/](.)
-
 # Security Audit · Quiet Wheel · 2026-10-03
 
 | Поле | Значение |

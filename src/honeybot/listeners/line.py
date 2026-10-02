@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 
 from honeybot.listeners.base import recv_line, recv_telnet_line, send, serve
@@ -107,6 +108,34 @@ async def run_ftp(reader, writer, app, ctx) -> None:
         await send(ctx, writer, "502 Command not implemented.\r\n")
 
 
+def decode_smtp_plain(blob: str) -> tuple[str, str]:
+    raw = blob.strip()[:500]
+    if not raw:
+        return "", ""
+    try:
+        data = base64.b64decode(raw, validate=False)
+    except Exception:
+        return "", raw[:200]
+    text = data.decode("utf-8", "replace")
+    parts = text.split("\x00")
+    if len(parts) >= 3:
+        return parts[-2][:120], parts[-1][:200]
+    if len(parts) == 2:
+        return parts[0][:120], parts[1][:200]
+    return "", text.replace("\x00", "")[:200]
+
+
+def decode_smtp_token(blob: str) -> str:
+    raw = blob.strip()[:500]
+    if not raw:
+        return ""
+    try:
+        data = base64.b64decode(raw, validate=False)
+    except Exception:
+        return raw[:200]
+    return data.decode("utf-8", "replace").replace("\x00", "")[:200]
+
+
 async def run_smtp(reader, writer, app, ctx) -> None:
     limit = app.cfg.limits.max_line_bytes
     await send(ctx, writer, "220 mail.web-01 ESMTP Postfix\r\n")
@@ -125,6 +154,41 @@ async def run_smtp(reader, writer, app, ctx) -> None:
             await send(ctx, writer, "250-mail.web-01\r\n250-AUTH PLAIN LOGIN\r\n250 OK\r\n")
             continue
         if verb == "AUTH":
+            pieces = line.split(" ")
+            mechanism = pieces[1].upper() if len(pieces) > 1 else ""
+            argument = pieces[2] if len(pieces) > 2 else ""
+            if mechanism == "PLAIN":
+                if not argument:
+                    await send(ctx, writer, "334 \r\n")
+                    argument = await recv_line(ctx, reader, limit) or ""
+                    if argument == "":
+                        return
+                username, secret = decode_smtp_plain(argument)
+                await app.store.add_auth(ctx.session_id, username, secret, "smtp", True)
+                await send(ctx, writer, "235 2.7.0 Authentication successful\r\n")
+                continue
+            if mechanism == "LOGIN":
+                username = decode_smtp_token(argument) if argument else ""
+                if not username:
+                    await send(ctx, writer, "334 VXNlcm5hbWU6\r\n")
+                    user_line = await recv_line(ctx, reader, limit)
+                    if user_line is None:
+                        return
+                    username = decode_smtp_token(user_line)
+                await send(ctx, writer, "334 UGFzc3dvcmQ6\r\n")
+                pass_line = await recv_line(ctx, reader, limit)
+                if pass_line is None:
+                    await app.store.add_auth(ctx.session_id, username, "", "smtp", True)
+                    return
+                await app.store.add_auth(
+                    ctx.session_id,
+                    username,
+                    decode_smtp_token(pass_line),
+                    "smtp",
+                    True,
+                )
+                await send(ctx, writer, "235 2.7.0 Authentication successful\r\n")
+                continue
             await app.store.add_auth(ctx.session_id, "", line[:200], "smtp", True)
             await send(ctx, writer, "235 2.7.0 Authentication successful\r\n")
             continue
@@ -163,6 +227,7 @@ async def _read_redis(ctx, reader, limit: int) -> str | None:
         return None
     if not line:
         return None
+    ctx.touch()
     ctx.bytes_in += len(line)
     if not line.startswith(b"*"):
         return line.decode("utf-8", "replace").strip()[:limit]
@@ -177,6 +242,7 @@ async def _read_redis(ctx, reader, limit: int) -> str | None:
         header = await reader.readline()
         if not header:
             return None
+        ctx.touch()
         ctx.bytes_in += len(header)
         if not header.startswith(b"$"):
             parts.append(header.decode("utf-8", "replace").strip())
@@ -194,9 +260,24 @@ async def _read_redis(ctx, reader, limit: int) -> str | None:
             blob = await reader.readexactly(size + 2)
         except asyncio.IncompleteReadError:
             return None
+        ctx.touch()
         ctx.bytes_in += len(blob)
         parts.append(blob[:-2].decode("utf-8", "replace"))
     return " ".join(parts)[:limit]
+
+
+_REDIS_INFO = (
+    "# Server\r\n"
+    "redis_version:7.0.15\r\n"
+    "redis_mode:standalone\r\n"
+    "os:Linux 5.15.0-91-generic x86_64\r\n"
+    "tcp_port:6379\r\n"
+)
+
+
+def _redis_bulk(text: str) -> str:
+    payload = text.encode("utf-8")
+    return f"${len(payload)}\r\n{text}\r\n"
 
 
 def _redis_reply(command: str) -> tuple[str, bool]:
@@ -205,6 +286,10 @@ def _redis_reply(command: str) -> tuple[str, bool]:
         return "+PONG\r\n", False
     if verb == "QUIT":
         return "+OK\r\n", True
+    if verb == "INFO":
+        return _redis_bulk(_REDIS_INFO), False
+    if verb in {"SLAVEOF", "REPLICAOF", "CONFIG", "MODULE"}:
+        return "-ERR unknown command\r\n", False
     return "-ERR unknown command\r\n", False
 
 

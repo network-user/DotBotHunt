@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 from honeybot.reconstruct import reconstruct
+
+log = logging.getLogger("honeybot")
+
+# Эти метки сами по себе повод смотреть сессию, даже если оператор не открыл панель.
+_ALERT = {"fetch_and_run", "miner", "reverse_shell"}
 
 
 async def finalize_session(app, session_id: str, bytes_in: int, bytes_out: int, banner: str) -> None:
@@ -8,6 +15,14 @@ async def finalize_session(app, session_id: str, bytes_in: int, bytes_out: int, 
     if not bundle.get("session"):
         return
     result = reconstruct(bundle)
+    hit = _ALERT.intersection(result.tags)
+    if hit:
+        log.warning(
+            "сессия %s с %s: %s",
+            session_id,
+            bundle["session"].get("ip") or "",
+            ",".join(sorted(hit)),
+        )
     await app.store.finish(
         session_id,
         primary=result.primary,

@@ -6,7 +6,9 @@
 [limits]
 max_conn_per_ip = 30
 max_global = 200
+# session_seconds: простой без данных. max_session_seconds: потолок всей сессии.
 session_seconds = 90
+max_session_seconds = 900
 max_line_bytes = 8192
 max_http_body = 65536
 max_db_mb = 512
@@ -16,6 +18,9 @@ dns_timeout_seconds = 2
 cache_hours = 24
 dns_server = "1.1.1.1"
 # mmdb_city = "GeoLite2-City.mmdb"
+# Необязательный файл MaxMind. Страна и город читаются из него, если рядом
+# установлен пакет maxminddb. Его нет в зависимостях. Без файла страна берётся
+# из Team Cymru, город остаётся пустым.
 # Страна берётся из ответа Team Cymru. Город и ISP спрашиваются у ip-api
 # только при ключе Pro, по HTTPS. Без ключа этот запрос не выполняется.
 enable_geo = true

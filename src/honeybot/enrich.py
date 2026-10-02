@@ -262,21 +262,36 @@ async def system_spamhaus(ip: str, timeout: float) -> str:
     return interpret_spamhaus(answers)
 
 
-def country_from_mmdb(path: str, ip: str) -> str:
+def place_from_mmdb(path: str, ip: str) -> tuple[str, str]:
+    """Страна и город из mmdb. Пусто, если файла или пакета maxminddb нет."""
     if not path or not Path(path).is_file():
-        return ""
+        return "", ""
     try:
         import maxminddb
     except ImportError:
-        return ""
+        return "", ""
     try:
         with maxminddb.open_database(path) as reader:
             record = reader.get(ip) or {}
     except (OSError, ValueError):
-        return ""
-    country = record.get("country") or {}
-    code = country.get("iso_code") or ""
-    return str(code)[:8]
+        return "", ""
+    if not isinstance(record, dict):
+        return "", ""
+    country = record.get("country") or record.get("registered_country") or {}
+    code = ""
+    if isinstance(country, dict):
+        code = str(country.get("iso_code") or "")[:8]
+    city_name = ""
+    city = record.get("city") or {}
+    if isinstance(city, dict):
+        names = city.get("names") or {}
+        if isinstance(names, dict):
+            city_name = str(names.get("en") or "")[:80]
+    return code, city_name
+
+
+def country_from_mmdb(path: str, ip: str) -> str:
+    return place_from_mmdb(path, ip)[0]
 
 
 def _blank_info(ip: str, org: str = "") -> dict:
@@ -328,7 +343,9 @@ async def enrich_ip(
             info["org"] = parse_org(org_text)
         except Exception:
             info["org"] = ""
-    info["country"] = country_from_mmdb(mmdb_path, norm) or cymru_country
+    mmdb_country, mmdb_city = place_from_mmdb(mmdb_path, norm)
+    info["country"] = mmdb_country or cymru_country
+    info["city"] = mmdb_city
     if geo_query is not None:
         try:
             geo = await geo_query(norm, timeout) or {}
@@ -336,7 +353,8 @@ async def enrich_ip(
             geo = {}
         if geo.get("country"):
             info["country"] = geo["country"]
-        info["city"] = geo.get("city") or ""
+        if geo.get("city"):
+            info["city"] = geo["city"]
         info["isp"] = geo.get("isp") or ""
     if spamhaus_query is not None:
         try:

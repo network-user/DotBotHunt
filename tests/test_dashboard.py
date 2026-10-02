@@ -37,6 +37,17 @@ async def test_dashboard_is_local_and_escapes(tmp_path):
         detail = await _get(bot.bound["dashboard"], "/session/abc123def456")
         assert b"<script>alert" not in detail
         assert b"&lt;script&gt;" in detail
+        assert "Запись открыта".encode() in page
+        assert b"203.0.113.9" in page
+        assert b"<script>" not in page
+        ip_page = await _get(bot.bound["dashboard"], "/ip/203.0.113.9")
+        assert b"abc123def456" in ip_page
+        assert b"<script>" not in ip_page
+        junk = await _get(bot.bound["dashboard"], "/?since=%3Cscript%3E&intent=%3Cbad%3E")
+        body = junk.split(b"\r\n\r\n", 1)[-1]
+        assert b"<script>" not in body
+        assert b"<bad>" not in body
+        assert b"200" in junk.split(b"\r\n", 1)[0]
     finally:
         await bot.stop()
 

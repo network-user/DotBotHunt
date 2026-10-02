@@ -7,6 +7,7 @@ from pathlib import Path
 import asyncssh
 
 from honeybot.closing import finalize_session
+from honeybot.limits import SessionClock
 from honeybot.reconstruct import normalize
 from honeybot.reply import prompt, respond
 from honeybot.util import new_id, normalize_ip
@@ -98,6 +99,7 @@ class HoneySession(asyncssh.SSHServerSession):
         del datatype
         if self.closing or self.chan is None:
             return
+        self.server.touch_activity()
         text = data if isinstance(data, str) else data.decode("utf-8", "replace")
         room = _MAX_SSH_INTAKE - self.server.intake
         if room <= 0:
@@ -182,6 +184,7 @@ class HoneySSHServer(asyncssh.SSHServer):
         self.line_count = 0
         self.intake = 0
         self.timer = None
+        self.clock: SessionClock | None = None
 
     def vfs_for(self) -> VFS:
         if self.vfs is None:
@@ -206,11 +209,42 @@ class HoneySSHServer(asyncssh.SSHServer):
             return
         self.acquired = True
         self.session_id = new_id()
-        self.timer = asyncio.get_running_loop().call_later(
+        self.clock = SessionClock(
             self.app.cfg.limits.session_seconds,
-            conn.close,
+            self.app.cfg.limits.max_session_seconds,
         )
+        self._arm()
         self.spawn(self._open())
+
+    def touch_activity(self) -> None:
+        if self.shutting or self.clock is None:
+            return
+        self.clock.touch()
+        self._arm()
+
+    def _arm(self) -> None:
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+        if self.shutting or self.conn is None or self.clock is None:
+            return
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        delay = min(
+            self.clock.idle_seconds - (now - self.clock.touched),
+            self.clock.max_seconds - (now - self.clock.started),
+        )
+        if delay <= 0:
+            self.conn.close()
+            return
+        self.timer = loop.call_later(delay, self._on_timer)
+
+    def _on_timer(self) -> None:
+        if self.clock is not None and self.clock.expired():
+            if self.conn is not None:
+                self.conn.close()
+            return
+        self._arm()
 
     def connection_lost(self, exc) -> None:
         del exc
@@ -250,6 +284,7 @@ class HoneySSHServer(asyncssh.SSHServer):
         return True
 
     def validate_password(self, username: str, password: str) -> bool:
+        self.touch_activity()
         need = self.app.cfg.listeners["ssh"].fail_before_accept
         accepted = self.auth_fails >= need
         if not accepted:
@@ -261,6 +296,7 @@ class HoneySSHServer(asyncssh.SSHServer):
         return accepted
 
     def validate_public_key(self, username: str, key) -> bool:
+        self.touch_activity()
         try:
             fingerprint = key.get_fingerprint()
         except Exception:

@@ -89,7 +89,7 @@ def tags_for_text(text: str, rules: Rules | None = None) -> list[str]:
     found: list[str] = []
     first = low.split(" ", 1)[0]
     for rule in rules.rules:
-        if rule.kind != "text":
+        if rule.kind not in {"text", "any"}:
             continue
         if any(needle in low for needle in rule.needles):
             found.append(rule.tag)
@@ -104,7 +104,7 @@ def tags_for_path(path: str, rules: Rules | None = None) -> list[str]:
     rules = rules or load_rules()
     found: list[str] = []
     for rule in rules.rules:
-        if rule.kind != "path":
+        if rule.kind not in {"path", "any"}:
             continue
         if any(_path_hit(path, needle) for needle in rule.needles):
             found.append(rule.tag)
@@ -124,6 +124,17 @@ def _path_hit(path: str, needle: str) -> bool:
     return item in low
 
 
+def tags_for_http(row: dict, rules: Rules | None = None) -> list[str]:
+    rules = rules or load_rules()
+    path = row.get("path") or ""
+    found = tags_for_path(path, rules)
+    blob = " ".join((path, row.get("query") or "", row.get("body_snippet") or ""))
+    for tag in tags_for_text(blob, rules):
+        if tag not in found:
+            found.append(tag)
+    return found
+
+
 def reconstruct(bundle: dict, rules: Rules | None = None) -> Result:
     rules = rules or load_rules()
     commands = bundle.get("commands") or []
@@ -138,7 +149,7 @@ def reconstruct(bundle: dict, rules: Rules | None = None) -> Result:
         command_tags[int(row["id"])] = found
         tags.update(found)
     for row in http_rows:
-        found = tags_for_path(row.get("path") or "", rules)
+        found = tags_for_http(row, rules)
         http_tags[int(row["id"])] = found
         tags.update(found)
     if _session_fetch(raw_commands):
@@ -187,8 +198,11 @@ def _evidence(primary: str, commands: list[dict], http_rows: list[dict], rules: 
         if primary in found:
             return row.get("raw") or ""
     for row in http_rows:
-        if primary in tags_for_path(row.get("path") or "", rules):
-            return row.get("path") or ""
+        if primary in tags_for_http(row, rules):
+            path = row.get("path") or ""
+            if primary in tags_for_path(path, rules):
+                return path
+            return row.get("body_snippet") or path
     if primary == "fetch_and_run":
         for row in commands:
             raw = row.get("raw") or ""

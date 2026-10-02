@@ -44,14 +44,31 @@ def _plain(value: object) -> str:
     return "".join(out)
 
 
+def _mb(size: int) -> str:
+    return f"{size / (1024 * 1024):.1f}"
+
+
 def format_stats(stats: dict) -> str:
-    lines = [
-        f"Сессий: {stats['sessions']}",
-        f"Уникальных IP: {stats['unique_ips']}",
-        f"IP в Spamhaus: {stats.get('spamhaus_listed', 0)}",
-        "",
-        "Страны:",
-    ]
+    lines = []
+    if stats.get("intent"):
+        lines.append(f"Метка: {_plain(stats['intent'])}")
+    if stats.get("since"):
+        lines.append(f"Окно с: {_plain(stats['since'])}")
+    if stats.get("db_cap_bytes"):
+        state = "открыта" if stats.get("recording", True) else "закрыта"
+        lines.append(
+            f"База: {_mb(int(stats.get('db_bytes') or 0))} МБ из "
+            f"{_mb(int(stats['db_cap_bytes']))}. Запись {state}."
+        )
+    lines.extend(
+        [
+            f"Сессий: {stats['sessions']}",
+            f"Уникальных IP: {stats['unique_ips']}",
+            f"IP в Spamhaus: {stats.get('spamhaus_listed', 0)}",
+            "",
+            "Страны:",
+        ]
+    )
     lines.extend(
         _rows(stats.get("top_countries") or [], lambda row: f"  {_plain(row['country'])}  {row['n']}")
     )
@@ -88,14 +105,38 @@ def format_stats(stats: dict) -> str:
     lines.append("HTTP-пути:")
     lines.extend(_rows(stats["top_paths"], lambda row: f"  {_plain(row['path'])}  {row['n']}"))
     lines.append("")
+    lines.append("Неразобранные команды:")
+    lines.extend(
+        _rows(
+            stats.get("top_unclassified") or [],
+            lambda row: f"  {_plain(row['command'])}  {row['n']}",
+        )
+    )
+    lines.append("")
+    lines.append("События:")
+    events = stats.get("recent_events") or []
+    if not events:
+        lines.append("  пока пусто")
+    else:
+        for row in events:
+            lines.append(
+                f"  {_plain(row.get('ts') or '')}  {_plain(row.get('kind') or '')}"
+                f"  {_plain(row.get('detail') or '')}"
+            )
+    lines.append("")
     lines.append("Последние сессии:")
     if not stats["recent"]:
         lines.append("  пока пусто")
     else:
         for row in stats["recent"]:
             intent = row.get("primary_intent") or "открыта"
+            when = row.get("started_at") or ""
+            country = row.get("country") or ""
+            extra = f"  {_plain(when)}" if when else ""
+            if country:
+                extra += f"  {_plain(country)}"
             lines.append(
-                f"  {_plain(row['id'])}  {_plain(row['ip'])}  {_plain(row['proto'])}  {_plain(intent)}"
+                f"  {_plain(row['id'])}  {_plain(row['ip'])}  {_plain(row['proto'])}  {_plain(intent)}{extra}"
             )
     return "\n".join(lines) + "\n"
 
@@ -168,6 +209,12 @@ def stats_json(stats: dict) -> str:
         "top_intents": stats["top_intents"],
         "top_commands": stats["top_commands"],
         "top_paths": stats["top_paths"],
+        "top_unclassified": stats.get("top_unclassified") or [],
+        "db_bytes": stats.get("db_bytes", 0),
+        "db_cap_bytes": stats.get("db_cap_bytes", 0),
+        "recording": bool(stats.get("recording", True)),
+        "since": stats.get("since") or "",
+        "intent": stats.get("intent") or "",
     }
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 

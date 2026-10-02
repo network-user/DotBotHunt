@@ -55,6 +55,9 @@ class _Server:
         self.spawned.append(coro)
         coro.close()
 
+    def touch_activity(self) -> None:
+        return None
+
 
 def test_data_received_closes_on_padded_long_line():
     server = _Server()

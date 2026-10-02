@@ -34,7 +34,7 @@ uv run --frozen honeybot run
 
 Команды сверены с `pyproject.toml` и `.github/workflows/ci.yml`. В CI перед тестами: `pip install uv==0.9.15`, затем `uv sync --frozen --extra dev`.
 
-Флаги: `--config` (по умолчанию `config.toml`), `--db` (по умолчанию `data/honeybot.db`). Подкоманды: `run`, `stats`, `session <id>`, `export <path>`, `rebuild`.
+Флаги: `--config` (по умолчанию `config.toml`), `--db` (по умолчанию `data/honeybot.db`). Подкоманды: `run`, `stats`, `session <id>`, `export <path>`, `rebuild`. У `stats` и `export` есть `--since` (`30m`, `24h`, `7d`) и `--intent`.
 
 ## Структура репозитория
 
@@ -77,6 +77,8 @@ uv.lock
 | Ключ | Назначение |
 |------|------------|
 | `limits.*` | лимиты соединений, длина строки, тело HTTP, размер базы |
+| `limits.session_seconds` | простой без данных клиента |
+| `limits.max_session_seconds` | потолок сессии, не короче простоя |
 | `enrich.dns_server` | DNS для Team Cymru и Spamhaus, по умолчанию `1.1.1.1` |
 | `enrich.ip_api_key` | город и ISP, только HTTPS Pro; пусто - сеть не открывается |
 | `enrich.abuseipdb_api_key` | AbuseIPDB; пусто - запрос выключен |
@@ -108,7 +110,7 @@ uv.lock
 
 ## Приманка
 
-DotBotHunt пишет ввод клиента и отвечает так, будто команда прошла. `reply` и `vfs` держат файлы в памяти. SQL в `store` с параметрами. Образ запускается не от root (`USER honey`). CI ставит `permissions.contents: read` и не использует `pull_request_target`.
+DotBotHunt пишет ввод клиента и отвечает так, будто команда прошла. `reply` и `vfs` держат файлы в памяти. В строке с метасимволами оболочки отвечаем на первую команду, хвост не запускается. SQL в `store` с параметрами. Когда база больше `limits.max_db_mb`, удаляются самые старые завершённые сессии. Образ запускается не от root (`USER honey`). CI ставит `permissions.contents: read` и не использует `pull_request_target`.
 
 ## Документация
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
 
 from honeybot.closing import finalize_session
+from honeybot.limits import SessionClock
 from honeybot.util import new_id, normalize_ip
 
 log = logging.getLogger("honeybot")
@@ -19,6 +21,7 @@ class ConnCtx:
     bytes_in: int = 0
     bytes_out: int = 0
     banner: str = ""
+    touch: Callable[[], None] = field(default_factory=lambda: (lambda: None))
 
 
 async def accept_connection(app, proto: str, writer: asyncio.StreamWriter, dst_port: int) -> ConnCtx | None:
@@ -47,6 +50,15 @@ async def accept_connection(app, proto: str, writer: asyncio.StreamWriter, dst_p
     return ConnCtx(session_id=session_id, ip=ip, src_port=src_port, dst_port=dst_port)
 
 
+def _watch(clock: SessionClock, writer: asyncio.StreamWriter) -> asyncio.Task:
+    async def watchdog() -> None:
+        while not clock.expired():
+            await asyncio.sleep(0.5)
+        writer.close()
+
+    return asyncio.create_task(watchdog())
+
+
 async def finish_connection(app, ctx: ConnCtx, writer: asyncio.StreamWriter) -> None:
     try:
         writer.close()
@@ -64,13 +76,19 @@ async def serve(app, proto: str, reader: asyncio.StreamReader, writer: asyncio.S
     ctx = await accept_connection(app, proto, writer, int(sock[1] or 0))
     if ctx is None:
         return
+    clock = SessionClock(app.cfg.limits.session_seconds, app.cfg.limits.max_session_seconds)
+    ctx.touch = clock.touch
+    watch = _watch(clock, writer)
     try:
-        await asyncio.wait_for(runner(reader, writer, app, ctx), app.cfg.limits.session_seconds)
-    except TimeoutError:
-        pass
+        await runner(reader, writer, app, ctx)
     except Exception:
         log.exception("сессия %s", ctx.session_id)
     finally:
+        watch.cancel()
+        try:
+            await watch
+        except asyncio.CancelledError:
+            pass
         await finish_connection(app, ctx, writer)
 
 
@@ -88,6 +106,7 @@ async def recv_line(ctx: ConnCtx, reader: asyncio.StreamReader, limit: int) -> s
         return None
     if not data:
         return None
+    ctx.touch()
     ctx.bytes_in += len(data)
     if len(data) > limit:
         data = data[:limit]
@@ -126,6 +145,7 @@ async def recv_telnet_line(ctx: ConnCtx, reader: asyncio.StreamReader, limit: in
         return None
     if not data:
         return None
+    ctx.touch()
     ctx.bytes_in += len(data)
     cleaned = strip_telnet(data)
     if len(cleaned) > limit:

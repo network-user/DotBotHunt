@@ -4,7 +4,7 @@ import re
 import shlex
 from dataclasses import dataclass
 
-from honeybot.vfs import FAKE_UNAME, HOSTNAME, VFS
+from honeybot.vfs import FAKE_UNAME, HOSTNAME, VFS, _IFCONFIG, _IP_ADDR, _IP_ROUTE
 
 _META = ("|", ";", "&", "`", "$(", "\n", ">", "<")
 _DOWNLOAD = {"wget", "curl", "tftp"}
@@ -25,6 +25,10 @@ _SIMPLE = {
     "curl",
     "tftp",
     "exit",
+    "env",
+    "history",
+    "ip",
+    "ifconfig",
 }
 
 
@@ -37,6 +41,14 @@ class Reply:
 
 def has_shell_meta(line: str) -> bool:
     return any(token in line for token in _META)
+
+
+def first_segment(line: str) -> str:
+    """Текст до первого метасимвола. Хвост с подстановкой и конвейером не исполняется."""
+    indexes = [line.find(mark) for mark in _META if mark in line]
+    if not indexes:
+        return line
+    return line[: min(indexes)]
 
 
 def prompt(vfs: VFS) -> str:
@@ -55,10 +67,11 @@ def respond(vfs: VFS, line: str) -> Reply:
     raw = line.strip()
     if not raw:
         return Reply("", 0)
-    if has_shell_meta(raw):
+    segment = first_segment(raw).strip() if has_shell_meta(raw) else raw
+    if not segment:
         return Reply("", 0)
     try:
-        parts = shlex.split(raw, posix=True)
+        parts = shlex.split(segment, posix=True)
     except ValueError:
         return Reply("", 0)
     if not parts:
@@ -198,6 +211,41 @@ def _exit(vfs: VFS, parts: list[str]) -> Reply:
     return Reply("", 0, close=True)
 
 
+def _env(vfs: VFS, parts: list[str]) -> Reply:
+    del parts
+    text = (
+        f"USER={vfs.user}\n"
+        f"HOME={vfs.home}\n"
+        f"PWD={vfs.cwd}\n"
+        "SHELL=/bin/bash\n"
+        f"HOSTNAME={HOSTNAME}\n"
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+    )
+    return Reply(text, 0)
+
+
+def _history(vfs: VFS, parts: list[str]) -> Reply:
+    del parts
+    content = vfs.read_file(vfs.home + "/.bash_history") or ""
+    lines = [item for item in content.splitlines() if item]
+    shown = [f"  {index}  {item}" for index, item in enumerate(lines, start=1)]
+    return Reply("\n".join(shown) + ("\n" if shown else ""), 0)
+
+
+def _ip(vfs: VFS, parts: list[str]) -> Reply:
+    del vfs
+    if len(parts) > 1 and parts[1] in {"route", "r"}:
+        return Reply(_IP_ROUTE, 0)
+    if len(parts) > 1 and parts[1] not in {"a", "addr", "address", "link"}:
+        return Reply(f"Command \"{parts[1]}\" is unknown, try \"ip help\".\n", 1)
+    return Reply(_IP_ADDR, 0)
+
+
+def _ifconfig(vfs: VFS, parts: list[str]) -> Reply:
+    del vfs, parts
+    return Reply(_IFCONFIG, 0)
+
+
 _HANDLERS = {
     "uname": _uname,
     "id": _id,
@@ -215,4 +263,8 @@ _HANDLERS = {
     "curl": _download,
     "tftp": _download,
     "exit": _exit,
+    "env": _env,
+    "history": _history,
+    "ip": _ip,
+    "ifconfig": _ifconfig,
 }

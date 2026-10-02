@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from honeybot.util import utcnow
+
+log = logging.getLogger("honeybot")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -81,6 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_commands_session ON commands(session_id);
 CREATE INDEX IF NOT EXISTS idx_auth_session ON auth_attempts(session_id);
 CREATE INDEX IF NOT EXISTS idx_http_session ON http_requests(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_ip ON sessions(ip);
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
 """
 
 
@@ -248,8 +252,11 @@ class Store:
             }
         )
 
-    async def stats(self) -> dict:
-        return await self._call({"op": "stats"})
+    async def stats(self, since: str = "", intent: str = "") -> dict:
+        return await self._call({"op": "stats", "since": since, "intent": intent})
+
+    async def ip_view(self, ip: str) -> dict:
+        return await self._call({"op": "ip_view", "ip": ip})
 
     async def session_ids(self) -> list[str]:
         return list(await self._call({"op": "session_ids"}))
@@ -289,7 +296,7 @@ class Store:
             except OSError:
                 continue
 
-    def _over_cap(self) -> bool:
+    def _size_bytes(self) -> int:
         total = 0
         for suffix in ("", "-wal", "-shm"):
             candidate = Path(str(self.path) + suffix) if suffix else self.path
@@ -297,7 +304,62 @@ class Store:
                 total += candidate.stat().st_size
             except OSError:
                 continue
-        return total > self.max_db_mb * 1024 * 1024
+        return total
+
+    def _over_cap(self) -> bool:
+        return self._size_bytes() > self.max_db_mb * 1024 * 1024
+
+    def _shrink(self) -> None:
+        assert self._conn is not None
+        self._conn.commit()
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            self._conn.execute("VACUUM")
+        except sqlite3.DatabaseError:
+            log.exception("сжатие базы")
+
+    def _delete_session(self, session_id: str) -> None:
+        assert self._conn is not None
+        for table in ("auth_attempts", "commands", "http_requests", "events"):
+            self._conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+    def _prune_if_needed(self) -> int:
+        assert self._conn is not None
+        if not self._over_cap():
+            return 0
+        self._shrink()
+        if not self._over_cap():
+            return 0
+        removed = 0
+        while self._over_cap() and removed < 100000:
+            row = self._conn.execute(
+                """
+                SELECT id FROM sessions
+                WHERE ended_at IS NOT NULL
+                ORDER BY started_at, id
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                row = self._conn.execute(
+                    "SELECT id FROM sessions ORDER BY started_at, id LIMIT 1"
+                ).fetchone()
+            if row is not None:
+                self._delete_session(row["id"])
+                removed += 1
+            else:
+                event = self._conn.execute("SELECT id FROM events ORDER BY id LIMIT 1").fetchone()
+                if event is None:
+                    break
+                self._conn.execute("DELETE FROM events WHERE id = ?", (event["id"],))
+                removed += 1
+            if removed % 50 == 0:
+                self._shrink()
+        if removed:
+            self._shrink()
+            log.info("база упёрлась в лимит, удалено старых записей: %s", removed)
+        return removed
 
     def _handle(self, op: dict):
         name = op["op"]
@@ -320,13 +382,16 @@ class Store:
         if name == "finish":
             return self._finish(op)
         if name == "stats":
-            return self._stats()
+            return self._stats(op.get("since") or "", op.get("intent") or "")
+        if name == "ip_view":
+            return self._ip_view(op["ip"])
         if name == "session_ids":
             rows = self._conn.execute("SELECT id FROM sessions ORDER BY started_at").fetchall()
             return [row["id"] for row in rows]
         raise RuntimeError(f"неизвестная операция {name}")
 
     def _open_session(self, op: dict) -> bool:
+        self._prune_if_needed()
         if self._over_cap():
             return False
         self._conn.execute(
@@ -339,6 +404,7 @@ class Store:
         return True
 
     def _add_auth(self, op: dict) -> None:
+        self._prune_if_needed()
         if self._over_cap():
             return None
         self._conn.execute(
@@ -358,6 +424,7 @@ class Store:
         return None
 
     def _add_command(self, op: dict) -> int:
+        self._prune_if_needed()
         if self._over_cap():
             return 0
         cursor = self._conn.execute(
@@ -377,6 +444,7 @@ class Store:
         return int(cursor.lastrowid or 0)
 
     def _add_http(self, op: dict) -> int:
+        self._prune_if_needed()
         if self._over_cap():
             return 0
         cursor = self._conn.execute(
@@ -399,6 +467,7 @@ class Store:
         return int(cursor.lastrowid or 0)
 
     def _add_event(self, op: dict) -> None:
+        self._prune_if_needed()
         if self._over_cap():
             return None
         self._conn.execute(
@@ -562,109 +631,203 @@ class Store:
         )
         return None
 
-    def _stats(self) -> dict:
+    def _where(self, since: str, intent: str, extra: list[str] | None = None) -> tuple[str, list]:
+        clauses: list[str] = []
+        params: list = []
+        if since:
+            clauses.append("s.started_at >= ?")
+            params.append(since)
+        if intent:
+            clauses.append("s.primary_intent = ?")
+            params.append(intent)
+        clauses.extend(extra or [])
+        if not clauses:
+            return "", params
+        return " WHERE " + " AND ".join(clauses), params
+
+    def _stats(self, since: str = "", intent: str = "") -> dict:
+        assert self._conn is not None
+        where, params = self._where(since, intent)
         totals = self._conn.execute(
-            "SELECT COUNT(*) AS sessions, COUNT(DISTINCT ip) AS ips FROM sessions"
+            f"SELECT COUNT(*) AS sessions, COUNT(DISTINCT s.ip) AS ips FROM sessions s{where}",
+            params,
         ).fetchone()
         orgs = self._conn.execute(
-            """
+            f"""
             SELECT COALESCE(NULLIF(i.org, ''), 'неизвестно') AS org,
                    COALESCE(i.asn, '') AS asn,
                    COUNT(DISTINCT s.ip) AS n
             FROM sessions s
             LEFT JOIN ip_info i ON i.ip = s.ip
+            {where}
             GROUP BY org, asn
             ORDER BY n DESC
             LIMIT 10
-            """
+            """,
+            params,
         ).fetchall()
         ports = self._conn.execute(
-            """
-            SELECT dst_port AS port, proto, COUNT(*) AS n
-            FROM sessions
-            GROUP BY dst_port, proto
+            f"""
+            SELECT s.dst_port AS port, s.proto AS proto, COUNT(*) AS n
+            FROM sessions s
+            {where}
+            GROUP BY s.dst_port, s.proto
             ORDER BY n DESC
             LIMIT 10
-            """
+            """,
+            params,
         ).fetchall()
+        user_where, user_params = self._where(
+            since,
+            intent,
+            ["a.username IS NOT NULL", "a.username != ''"],
+        )
         users = self._conn.execute(
-            """
-            SELECT username, COUNT(*) AS n
-            FROM auth_attempts
-            WHERE username IS NOT NULL AND username != ''
-            GROUP BY username
+            f"""
+            SELECT a.username AS username, COUNT(*) AS n
+            FROM auth_attempts a
+            JOIN sessions s ON s.id = a.session_id
+            {user_where}
+            GROUP BY a.username
             ORDER BY n DESC
             LIMIT 10
-            """
+            """,
+            user_params,
         ).fetchall()
+        intent_where, intent_params = self._where(
+            since,
+            intent,
+            ["s.primary_intent IS NOT NULL", "s.primary_intent != ''"],
+        )
         intents = self._conn.execute(
-            """
-            SELECT primary_intent AS intent, COUNT(*) AS n
-            FROM sessions
-            WHERE primary_intent IS NOT NULL AND primary_intent != ''
-            GROUP BY primary_intent
+            f"""
+            SELECT s.primary_intent AS intent, COUNT(*) AS n
+            FROM sessions s
+            {intent_where}
+            GROUP BY s.primary_intent
             ORDER BY n DESC
-            """
+            """,
+            intent_params,
         ).fetchall()
+        command_where, command_params = self._where(
+            since,
+            intent,
+            ["c.normalized IS NOT NULL", "c.normalized != ''"],
+        )
         commands = self._conn.execute(
-            """
-            SELECT normalized AS command, COUNT(*) AS n
-            FROM commands
-            WHERE normalized IS NOT NULL AND normalized != ''
-            GROUP BY normalized
+            f"""
+            SELECT c.normalized AS command, COUNT(*) AS n
+            FROM commands c
+            JOIN sessions s ON s.id = c.session_id
+            {command_where}
+            GROUP BY c.normalized
             ORDER BY n DESC
             LIMIT 10
-            """
+            """,
+            command_params,
         ).fetchall()
         paths = self._conn.execute(
-            """
-            SELECT path, COUNT(*) AS n
-            FROM http_requests
-            GROUP BY path
+            f"""
+            SELECT h.path AS path, COUNT(*) AS n
+            FROM http_requests h
+            JOIN sessions s ON s.id = h.session_id
+            {where}
+            GROUP BY h.path
             ORDER BY n DESC
             LIMIT 10
-            """
+            """,
+            params,
         ).fetchall()
         countries = self._conn.execute(
-            """
+            f"""
             SELECT COALESCE(NULLIF(i.country, ''), 'неизвестно') AS country,
                    COUNT(DISTINCT s.ip) AS n
             FROM sessions s
             LEFT JOIN ip_info i ON i.ip = s.ip
+            {where}
             GROUP BY country
             ORDER BY n DESC
             LIMIT 10
-            """
+            """,
+            params,
         ).fetchall()
+        city_where, city_params = self._where(
+            since,
+            intent,
+            ["i.city IS NOT NULL", "i.city != ''"],
+        )
         cities = self._conn.execute(
-            """
-            SELECT city, COUNT(DISTINCT s.ip) AS n
+            f"""
+            SELECT i.city AS city, COUNT(DISTINCT s.ip) AS n
             FROM sessions s
             JOIN ip_info i ON i.ip = s.ip
-            WHERE city IS NOT NULL AND city != ''
-            GROUP BY city
+            {city_where}
+            GROUP BY i.city
             ORDER BY n DESC
             LIMIT 10
-            """
+            """,
+            city_params,
         ).fetchall()
+        listed_where, listed_params = self._where(since, intent, ["i.spamhaus = 'listed'"])
         listed = self._conn.execute(
-            """
+            f"""
             SELECT COUNT(DISTINCT s.ip) AS n
             FROM sessions s
             JOIN ip_info i ON i.ip = s.ip
-            WHERE i.spamhaus = 'listed'
-            """
+            {listed_where}
+            """,
+            listed_params,
         ).fetchone()
         recent = self._conn.execute(
-            """
+            f"""
             SELECT s.id, s.started_at, s.ip, s.proto, s.dst_port, s.primary_intent, s.summary,
                    COALESCE(i.country, '') AS country
             FROM sessions s
             LEFT JOIN ip_info i ON i.ip = s.ip
+            {where}
             ORDER BY s.started_at DESC
             LIMIT 20
-            """
+            """,
+            params,
         ).fetchall()
+        plain_clauses = ["s.primary_intent = 'unclassified'", "c.normalized IS NOT NULL", "c.normalized != ''"]
+        plain_params: list = []
+        if since:
+            plain_clauses.append("s.started_at >= ?")
+            plain_params.append(since)
+        plain_where = " WHERE " + " AND ".join(plain_clauses)
+        unclassified = self._conn.execute(
+            f"""
+            SELECT c.normalized AS command, COUNT(*) AS n
+            FROM commands c
+            JOIN sessions s ON s.id = c.session_id
+            {plain_where}
+            GROUP BY c.normalized
+            ORDER BY n DESC
+            LIMIT 10
+            """,
+            plain_params,
+        ).fetchall()
+        if since:
+            events = self._conn.execute(
+                """
+                SELECT ts, session_id, kind, detail
+                FROM events
+                WHERE ts >= ?
+                ORDER BY id DESC
+                LIMIT 15
+                """,
+                (since,),
+            ).fetchall()
+        else:
+            events = self._conn.execute(
+                """
+                SELECT ts, session_id, kind, detail
+                FROM events
+                ORDER BY id DESC
+                LIMIT 15
+                """
+            ).fetchall()
         return {
             "sessions": totals["sessions"],
             "unique_ips": totals["ips"],
@@ -677,5 +840,51 @@ class Store:
             "top_intents": [dict(row) for row in intents],
             "top_commands": [dict(row) for row in commands],
             "top_paths": [dict(row) for row in paths],
+            "top_unclassified": [dict(row) for row in unclassified],
             "recent": [dict(row) for row in recent],
+            "recent_events": [dict(row) for row in events],
+            "db_bytes": self._size_bytes(),
+            "db_cap_bytes": self.max_db_mb * 1024 * 1024,
+            "recording": not self._over_cap(),
+            "since": since,
+            "intent": intent,
+        }
+
+    def _ip_view(self, ip: str) -> dict:
+        assert self._conn is not None
+        info = self._conn.execute("SELECT * FROM ip_info WHERE ip = ?", (ip,)).fetchone()
+        total = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM sessions WHERE ip = ?",
+            (ip,),
+        ).fetchone()["n"]
+        sessions = self._conn.execute(
+            """
+            SELECT id, started_at, ended_at, proto, dst_port, primary_intent, summary,
+                   username, auth_result, command_count
+            FROM sessions
+            WHERE ip = ?
+            ORDER BY started_at DESC
+            LIMIT 100
+            """,
+            (ip,),
+        ).fetchall()
+        ids = [row["id"] for row in sessions]
+        auths = []
+        if ids:
+            marks = ",".join("?" for _ in ids)
+            auths = self._conn.execute(
+                f"""
+                SELECT session_id, username, secret, method, fake_accepted
+                FROM auth_attempts
+                WHERE session_id IN ({marks})
+                ORDER BY id
+                """,
+                ids,
+            ).fetchall()
+        return {
+            "ip": ip,
+            "ip_info": dict(info) if info else {},
+            "sessions": [dict(row) for row in sessions],
+            "auths": [dict(row) for row in auths],
+            "total": total,
         }

@@ -25,6 +25,7 @@ class Limits:
     max_conn_per_ip: int = 30
     max_global: int = 200
     session_seconds: int = 90
+    max_session_seconds: int = 900
     max_line_bytes: int = 8192
     max_http_body: int = 65536
     max_db_mb: int = 512
@@ -116,5 +117,9 @@ def validate(cfg: Config) -> None:
             raise ConfigError(f"fail_before_accept у {name} меньше нуля")
     if cfg.limits.session_seconds <= 0:
         raise ConfigError("session_seconds должен быть больше нуля")
+    if cfg.limits.max_session_seconds <= 0:
+        raise ConfigError("max_session_seconds должен быть больше нуля")
+    if cfg.limits.max_session_seconds < cfg.limits.session_seconds:
+        raise ConfigError("max_session_seconds меньше session_seconds")
     if cfg.limits.max_global <= 0 or cfg.limits.max_conn_per_ip <= 0:
         raise ConfigError("Лимиты соединений должны быть больше нуля")
