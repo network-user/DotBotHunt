@@ -20,7 +20,7 @@ uv run --frozen honeybot run
 
 Нет `config.toml` - CLI берёт `config.example.toml`. Ключи `ip_api_key` и `abuseipdb_api_key` пиши только в `config.toml`. Этот файл не читай и не коммить.
 
-Панель: http://127.0.0.1:8787. Слушатели на `0.0.0.0`: SSH 2222, HTTP 8080, telnet 2323, FTP 2121, SMTP 2525, redis 6379. База: `data/honeybot.db`.
+Панель: http://127.0.0.1:8787. Скачать отчёт: `GET /report.html`, `/report.json`, `/report.md`, `/report.csv` (те же `since` и `intent`). Слушатели на `0.0.0.0`: SSH 2222, HTTP 8080, telnet 2323, FTP 2121, SMTP 2525, redis 6379. База: `data/honeybot.db`. Журнал процесса: `data/honeybot.log`.
 
 ## Сборка и проверки
 
@@ -34,7 +34,7 @@ uv run --frozen honeybot run
 
 Команды сверены с `pyproject.toml` и `.github/workflows/ci.yml`. В CI перед тестами: `pip install uv==0.9.15`, затем `uv sync --frozen --extra dev`.
 
-Флаги: `--config` (по умолчанию `config.toml`), `--db` (по умолчанию `data/honeybot.db`). Подкоманды: `run`, `stats`, `session <id>`, `export <path>`, `rebuild`. У `stats` и `export` есть `--since` (`30m`, `24h`, `7d`) и `--intent`.
+Флаги: `--config` (по умолчанию `config.toml`), `--db` (по умолчанию `data/honeybot.db`). Подкоманды: `run`, `stats`, `session <id>`, `export <path>`, `report`, `rebuild`. У `stats`, `export` и `report` есть `--since` (`30m`, `24h`, `7d`) и `--intent`. `report --format html|json|md|csv` пишет файл (`--output`) или stdout.
 
 ## Структура репозитория
 
@@ -84,6 +84,9 @@ uv.lock
 | `enrich.abuseipdb_api_key` | AbuseIPDB; пусто - запрос выключен |
 | `enrich.enable_geo` / `enable_spamhaus` | флаги обогащения |
 | `dashboard.host` / `dashboard.port` | только `127.0.0.1`, порт 8787 |
+| `log.path` | файл журнала процесса, по умолчанию `data/honeybot.log`; пусто - только stderr |
+| `log.level` | `DEBUG`, `INFO`, `WARNING` или `ERROR` |
+| `log.max_mb` / `log.backups` | размер файла и число архивов, не больше 50 |
 | `listeners.<name>.port` | ssh, http, telnet, ftp, smtp, redis |
 
 Не читай `config.toml`, `.env`, `*.pem`, `*.key` и файлы, в имени которых есть secret, token, credential или password.
@@ -110,7 +113,7 @@ uv.lock
 
 ## Приманка
 
-DotBotHunt пишет ввод клиента и отвечает так, будто команда прошла. `reply` и `vfs` держат файлы в памяти. В строке с метасимволами оболочки отвечаем на первую команду, хвост не запускается. SQL в `store` с параметрами. Когда база больше `limits.max_db_mb`, удаляются самые старые завершённые сессии. Образ запускается не от root (`USER honey`). CI ставит `permissions.contents: read` и не использует `pull_request_target`.
+DotBotHunt пишет ввод клиента и отвечает так, будто команда прошла. `reply` и `vfs` держат файлы в памяти. В строке с метасимволами оболочки отвечаем на первую команду, хвост не запускается. SQL в `store` с параметрами. Когда база больше `limits.max_db_mb`, удаляются самые старые завершённые сессии. Файл отчёта (`report`, скачивание с панели) не содержит секреты попыток входа. Журнал процесса не содержит текст команд. Образ запускается не от root (`USER honey`). CI ставит `permissions.contents: read` и не использует `pull_request_target`.
 
 ## Документация
 
