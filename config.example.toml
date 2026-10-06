@@ -34,6 +34,14 @@ enabled = true
 host = "127.0.0.1"
 port = 8787
 
+[log]
+# Пустой path оставляет сообщения только в stderr процесса.
+# Файл крутится: после max_mb пишется следующий, хранится backups архивов.
+path = "data/honeybot.log"
+level = "INFO"
+max_mb = 10
+backups = 5
+
 [listeners.ssh]
 enabled = true
 port = 2222

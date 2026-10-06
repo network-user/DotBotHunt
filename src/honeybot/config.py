@@ -51,6 +51,14 @@ class Dashboard:
 
 
 @dataclass
+class Log:
+    path: str = "data/honeybot.log"
+    level: str = "INFO"
+    max_mb: int = 10
+    backups: int = 5
+
+
+@dataclass
 class Listener:
     enabled: bool = True
     port: int = 0
@@ -62,6 +70,7 @@ class Config:
     limits: Limits = field(default_factory=Limits)
     enrich: Enrich = field(default_factory=Enrich)
     dashboard: Dashboard = field(default_factory=Dashboard)
+    log: Log = field(default_factory=Log)
     listeners: dict[str, Listener] = field(default_factory=dict)
     db_path: Path = Path("data/honeybot.db")
 
@@ -99,6 +108,7 @@ def load_config(path: Path) -> Config:
         limits=_take(Limits, raw.get("limits")),
         enrich=_take(Enrich, raw.get("enrich")),
         dashboard=_take(Dashboard, raw.get("dashboard")),
+        log=_take(Log, raw.get("log")),
         listeners=listeners,
     )
     validate(cfg)
@@ -123,3 +133,16 @@ def validate(cfg: Config) -> None:
         raise ConfigError("max_session_seconds меньше session_seconds")
     if cfg.limits.max_global <= 0 or cfg.limits.max_conn_per_ip <= 0:
         raise ConfigError("Лимиты соединений должны быть больше нуля")
+    level = str(cfg.log.level or "").strip().upper()
+    if level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+        raise ConfigError("Уровень лога: DEBUG, INFO, WARNING или ERROR")
+    if isinstance(cfg.log.max_mb, bool) or not isinstance(cfg.log.max_mb, int) or cfg.log.max_mb <= 0:
+        raise ConfigError("max_mb лога должен быть больше нуля")
+    if (
+        isinstance(cfg.log.backups, bool)
+        or not isinstance(cfg.log.backups, int)
+        or not 0 <= cfg.log.backups <= 50
+    ):
+        raise ConfigError("Число архивов лога от 0 до 50")
+    if not isinstance(cfg.log.path, str):
+        raise ConfigError("Путь лога должен быть строкой")

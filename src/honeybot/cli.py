@@ -5,6 +5,7 @@ import asyncio
 import logging
 import signal
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from honeybot.app import HoneyBot
@@ -47,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         if args.cmd == "run":
-            logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+            configure_logging(cfg)
             asyncio.run(_run(cfg))
             return 0
         return asyncio.run(_offline(cfg, args))
@@ -82,6 +83,9 @@ async def _run(cfg) -> None:
     for name, port in bot.bound.items():
         host = "127.0.0.1" if name == "dashboard" else "0.0.0.0"
         print(f"  {name}: {host}:{port}")
+    journal = str(cfg.log.path or "").strip()
+    if journal:
+        print(f"  журнал: {journal}")
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     installed: list = []
@@ -102,6 +106,41 @@ async def _run(cfg) -> None:
         for sig in installed:
             loop.remove_signal_handler(sig)
         await bot.stop()
+
+
+def configure_logging(cfg) -> None:
+    """stderr и, если задан path, крутящийся файл. Команды клиентов сюда не пишутся."""
+    level_name = str(cfg.log.level or "INFO").strip().upper()
+    level = getattr(logging, level_name, None)
+    if not isinstance(level, int):
+        raise ConfigError("Уровень лога: DEBUG, INFO, WARNING или ERROR")
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    path = str(cfg.log.path or "").strip()
+    if path:
+        dest = Path(path)
+        if dest.exists() and dest.is_dir():
+            raise ConfigError("Путь лога указывает на каталог")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(
+            RotatingFileHandler(
+                dest,
+                maxBytes=int(cfg.log.max_mb) * 1024 * 1024,
+                backupCount=int(cfg.log.backups),
+                encoding="utf-8",
+            )
+        )
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=handlers,
+        force=True,
+    )
+    if path:
+        try:
+            Path(path).chmod(0o600)
+        except OSError:
+            pass
+        logging.getLogger("honeybot").info("журнал открыт")
 
 
 def _window(args) -> tuple[str, str]:
