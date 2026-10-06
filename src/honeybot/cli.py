@@ -10,7 +10,7 @@ from pathlib import Path
 from honeybot.app import HoneyBot
 from honeybot.config import ConfigError, default_config, load_config
 from honeybot.reconstruct import reconstruct
-from honeybot.report import format_session, format_stats, stats_json
+from honeybot.report import format_session, format_stats, render_report, stats_json
 from honeybot.store import Store
 from honeybot.util import parse_intent, parse_since
 
@@ -33,6 +33,11 @@ def main(argv: list[str] | None = None) -> int:
     export.add_argument("path")
     export.add_argument("--since", default="", help="окно: 30m, 24h или 7d")
     export.add_argument("--intent", default="", help="только эта метка")
+    report = commands.add_parser("report", help="отчёт по атакам: html, json, md или csv")
+    report.add_argument("--format", default="html", help="html, json, md или csv")
+    report.add_argument("--output", default="", help="файл, иначе печать в stdout")
+    report.add_argument("--since", default="", help="окно: 30m, 24h или 7d")
+    report.add_argument("--intent", default="", help="только эта метка")
     commands.add_parser("rebuild", help="заново проставить метки")
     args = parser.parse_args(argv)
     try:
@@ -121,6 +126,8 @@ async def _offline(cfg, args) -> int:
             Path(args.path).write_text(stats_json(await store.stats(since, intent)), encoding="utf-8")
             print(f"Записано {args.path}")
             return 0
+        if args.cmd == "report":
+            return await _write_report(store, args)
         if args.cmd == "session":
             return await _show_session(store, args.id)
         if args.cmd == "rebuild":
@@ -128,6 +135,21 @@ async def _offline(cfg, args) -> int:
     finally:
         await store.stop()
     return 2
+
+
+async def _write_report(store: Store, args) -> int:
+    fmt = (getattr(args, "format", "") or "html").strip().lower()
+    if fmt not in {"html", "json", "md", "csv"}:
+        raise ConfigError("Формат отчёта: html, json, md или csv")
+    since, intent = _window(args)
+    text = render_report(fmt, await store.report(since, intent))
+    output = getattr(args, "output", "") or ""
+    if output:
+        Path(output).write_text(text, encoding="utf-8")
+        print(f"Записано {output}")
+        return 0
+    print(text, end="")
+    return 0
 
 
 async def _show_session(store: Store, session_id: str) -> int:

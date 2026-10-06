@@ -10,6 +10,15 @@ from honeybot.util import utcnow
 
 log = logging.getLogger("honeybot")
 
+# Сессии, которые в отчёте разбираются по командам. Слабые метки остаются в общих таблицах.
+_NOTABLE = (
+    "fetch_and_run",
+    "reverse_shell",
+    "miner",
+    "webshell",
+    "persistence",
+)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -86,6 +95,28 @@ CREATE INDEX IF NOT EXISTS idx_http_session ON http_requests(session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_ip ON sessions(ip);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
 """
+
+
+def _clip(text: object, limit: int = 240) -> str:
+    raw = "" if text is None else str(text)
+    if len(raw) <= limit:
+        return raw
+    return raw[: limit - 3] + "..."
+
+
+def _bucket_width(since: str) -> int:
+    """13 символов ISO - час, 10 - день. Узкое окно рисуется по часам."""
+    if not since:
+        return 10
+    try:
+        moment = datetime.fromisoformat(since)
+    except ValueError:
+        return 10
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - moment <= timedelta(hours=48):
+        return 13
+    return 10
 
 
 class Store:
@@ -255,6 +286,10 @@ class Store:
     async def stats(self, since: str = "", intent: str = "") -> dict:
         return await self._call({"op": "stats", "since": since, "intent": intent})
 
+    async def report(self, since: str = "", intent: str = "") -> dict:
+        """Сводка плюс срезы для файла отчёта. Секреты попыток входа не выбираются."""
+        return await self._call({"op": "report", "since": since, "intent": intent})
+
     async def ip_view(self, ip: str) -> dict:
         return await self._call({"op": "ip_view", "ip": ip})
 
@@ -383,6 +418,12 @@ class Store:
             return self._finish(op)
         if name == "stats":
             return self._stats(op.get("since") or "", op.get("intent") or "")
+        if name == "report":
+            since = op.get("since") or ""
+            intent = op.get("intent") or ""
+            data = self._stats(since, intent)
+            self._attach_report(data, since, intent)
+            return data
         if name == "ip_view":
             return self._ip_view(op["ip"])
         if name == "session_ids":
@@ -849,6 +890,204 @@ class Store:
             "since": since,
             "intent": intent,
         }
+
+    def _attach_report(self, data: dict, since: str, intent: str) -> None:
+        assert self._conn is not None
+        where, params = self._where(since, intent)
+        ips = self._conn.execute(
+            f"""
+            SELECT s.ip AS ip,
+                   COUNT(*) AS n,
+                   COALESCE(i.country, '') AS country,
+                   COALESCE(i.city, '') AS city,
+                   COALESCE(i.org, '') AS org,
+                   COALESCE(i.asn, '') AS asn,
+                   COALESCE(i.isp, '') AS isp,
+                   COALESCE(i.spamhaus, '') AS spamhaus,
+                   i.abuse_score AS abuse_score,
+                   i.abuse_reports AS abuse_reports
+            FROM sessions s
+            LEFT JOIN ip_info i ON i.ip = s.ip
+            {where}
+            GROUP BY s.ip
+            ORDER BY n DESC, s.ip
+            LIMIT 15
+            """,
+            params,
+        ).fetchall()
+        width = _bucket_width(since)
+        buckets = self._conn.execute(
+            f"""
+            SELECT substr(s.started_at, 1, {width}) AS bucket, COUNT(*) AS n
+            FROM sessions s
+            {where}
+            GROUP BY bucket
+            ORDER BY bucket DESC
+            LIMIT 48
+            """,
+            params,
+        ).fetchall()
+        auth = self._conn.execute(
+            f"""
+            SELECT COUNT(*) AS attempts,
+                   COALESCE(SUM(CASE WHEN a.fake_accepted != 0 THEN 1 ELSE 0 END), 0) AS accepted
+            FROM auth_attempts a
+            JOIN sessions s ON s.id = a.session_id
+            {where}
+            """,
+            params,
+        ).fetchone()
+        channels = self._conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(c.channel, ''), 'неизвестно') AS channel, COUNT(*) AS n
+            FROM commands c
+            JOIN sessions s ON s.id = c.session_id
+            {where}
+            GROUP BY channel
+            ORDER BY n DESC
+            """,
+            params,
+        ).fetchall()
+        methods = self._conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(h.method, ''), '-') AS method, COUNT(*) AS n
+            FROM http_requests h
+            JOIN sessions s ON s.id = h.session_id
+            {where}
+            GROUP BY method
+            ORDER BY n DESC
+            LIMIT 8
+            """,
+            params,
+        ).fetchall()
+        traffic = self._conn.execute(
+            f"""
+            SELECT COALESCE(SUM(s.bytes_in), 0) AS bytes_in,
+                   COALESCE(SUM(s.bytes_out), 0) AS bytes_out
+            FROM sessions s
+            {where}
+            """,
+            params,
+        ).fetchone()
+        names = ",".join(f"'{name}'" for name in _NOTABLE)
+        notable_where, notable_params = self._where(
+            since,
+            intent,
+            [f"s.primary_intent IN ({names})"],
+        )
+        notable_rows = self._conn.execute(
+            f"""
+            SELECT s.id, s.started_at, s.ended_at, s.ip, s.proto, s.dst_port,
+                   s.primary_intent, s.summary, s.username, s.auth_result, s.command_count,
+                   COALESCE(i.country, '') AS country,
+                   COALESCE(i.org, '') AS org,
+                   COALESCE(i.spamhaus, '') AS spamhaus,
+                   i.abuse_score AS abuse_score
+            FROM sessions s
+            LEFT JOIN ip_info i ON i.ip = s.ip
+            {notable_where}
+            ORDER BY s.started_at DESC
+            LIMIT 25
+            """,
+            notable_params,
+        ).fetchall()
+        notable_ids = [row["id"] for row in notable_rows]
+        # Тело HTTP и секрет входа не берём: отчёт можно переслать, пароль остаётся в панели.
+        command_lines = self._grouped_lines(notable_ids, "commands", "raw", 8)
+        http_lines = self._grouped_lines(
+            notable_ids,
+            "http_requests",
+            "COALESCE(method, '') || ' ' || COALESCE(path, '')"
+            " || CASE WHEN COALESCE(query, '') != '' THEN '?' || query ELSE '' END",
+            6,
+        )
+        notable = []
+        for row in notable_rows:
+            item = dict(row)
+            item["commands"] = command_lines.get(row["id"], [])
+            item["http"] = http_lines.get(row["id"], [])
+            notable.append(item)
+        session_rows = self._conn.execute(
+            f"""
+            SELECT s.id, s.started_at, s.ended_at, s.ip, s.proto, s.dst_port,
+                   s.primary_intent, s.summary, s.username, s.auth_result, s.command_count,
+                   COALESCE(i.country, '') AS country,
+                   COALESCE(i.org, '') AS org,
+                   COALESCE(i.asn, '') AS asn,
+                   COALESCE(i.spamhaus, '') AS spamhaus,
+                   i.abuse_score AS abuse_score
+            FROM sessions s
+            LEFT JOIN ip_info i ON i.ip = s.ip
+            {where}
+            ORDER BY s.started_at DESC
+            LIMIT 500
+            """,
+            params,
+        ).fetchall()
+        if since:
+            events = self._conn.execute(
+                """
+                SELECT ts, session_id, kind, detail
+                FROM events
+                WHERE ts >= ?
+                ORDER BY id DESC
+                LIMIT 50
+                """,
+                (since,),
+            ).fetchall()
+        else:
+            events = self._conn.execute(
+                """
+                SELECT ts, session_id, kind, detail
+                FROM events
+                ORDER BY id DESC
+                LIMIT 50
+                """
+            ).fetchall()
+        attempts = int(auth["attempts"] or 0)
+        accepted = int(auth["accepted"] or 0)
+        rows = [dict(row) for row in session_rows]
+        data["top_ips"] = [dict(row) for row in ips]
+        data["timeline"] = [dict(row) for row in reversed(buckets)]
+        data["timeline_unit"] = "hour" if width == 13 else "day"
+        data["auth"] = {
+            "attempts": attempts,
+            "accepted": accepted,
+            "rejected": attempts - accepted,
+        }
+        data["top_channels"] = [dict(row) for row in channels]
+        data["top_methods"] = [dict(row) for row in methods]
+        data["bytes_in"] = int(traffic["bytes_in"] or 0)
+        data["bytes_out"] = int(traffic["bytes_out"] or 0)
+        data["notable"] = notable
+        data["session_rows"] = rows
+        data["session_rows_capped"] = int(data["sessions"]) > len(rows)
+        data["events"] = [dict(row) for row in events]
+
+    def _grouped_lines(
+        self,
+        ids: list[str],
+        table: str,
+        expr: str,
+        limit_each: int,
+    ) -> dict[str, list[str]]:
+        grouped = {item: [] for item in ids}
+        if not ids:
+            return grouped
+        if table not in {"commands", "http_requests"}:
+            raise RuntimeError("неизвестная таблица отчёта")
+        assert self._conn is not None
+        marks = ",".join("?" for _ in ids)
+        found = self._conn.execute(
+            f"SELECT session_id, {expr} AS line FROM {table} WHERE session_id IN ({marks}) ORDER BY id",
+            ids,
+        ).fetchall()
+        for row in found:
+            bucket = grouped.get(row["session_id"])
+            if bucket is None or len(bucket) >= limit_each:
+                continue
+            bucket.append(_clip(row["line"]))
+        return grouped
 
     def _ip_view(self, ip: str) -> dict:
         assert self._conn is not None

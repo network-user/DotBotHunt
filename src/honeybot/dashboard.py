@@ -7,7 +7,7 @@ from html import escape
 
 from honeybot.config import ConfigError
 from honeybot.listeners.http import read_request
-from honeybot.report import reputation_line
+from honeybot.report import render_report, reputation_line
 from honeybot.util import normalize_ip, parse_intent, parse_since
 
 log = logging.getLogger("honeybot")
@@ -94,6 +94,18 @@ def _filters(query: str) -> tuple[str, str, str]:
     return token, since, intent
 
 
+def _report_href(fmt: str, since_token: str, intent: str) -> str:
+    parts = []
+    if since_token:
+        parts.append("since=" + since_token)
+    if intent:
+        parts.append("intent=" + intent)
+    path = "/report." + fmt
+    if not parts:
+        return path
+    return path + "?" + "&".join(parts)
+
+
 def _href(since_token: str, intent: str) -> str:
     parts = []
     if since_token:
@@ -132,6 +144,11 @@ def render_home(stats: dict, since_token: str = "", intent: str = "") -> str:
         f"<p><a href='{_href('', intent)}'>всё время</a> · "
         f"<a href='{_href('24h', intent)}'>сутки</a> · "
         f"<a href='{_href(since_token, '')}'>все метки</a></p>"
+        "<p>Скачать отчёт: "
+        f"<a href='{escape(_report_href('html', since_token, intent))}'>HTML</a> · "
+        f"<a href='{escape(_report_href('json', since_token, intent))}'>JSON</a> · "
+        f"<a href='{escape(_report_href('md', since_token, intent))}'>Markdown</a> · "
+        f"<a href='{escape(_report_href('csv', since_token, intent))}'>CSV</a></p>"
     )
     intent_rows = []
     for row in stats.get("top_intents") or []:
@@ -375,6 +392,32 @@ def render_ip(view: dict) -> str | None:
     return _page(f"IP {ip}", "\n".join(item for item in lines if item))
 
 
+_REPORT_FILES = {
+    "/report.html": ("html", "text/html; charset=utf-8", "honeybot-report.html"),
+    "/report.json": ("json", "application/json; charset=utf-8", "honeybot-report.json"),
+    "/report.md": ("md", "text/markdown; charset=utf-8", "honeybot-report.md"),
+    "/report.csv": ("csv", "text/csv; charset=utf-8", "honeybot-report.csv"),
+}
+
+
+def _download(content_type: str, filename: str, body: str) -> bytes:
+    raw = body.encode("utf-8")
+    header = (
+        "HTTP/1.1 200 OK\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(raw)}\r\n"
+        f"Content-Disposition: attachment; filename=\"{filename}\"\r\n"
+        "X-Content-Type-Options: nosniff\r\n"
+        "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; "
+        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\n"
+        "X-Frame-Options: DENY\r\n"
+        "Referrer-Policy: no-referrer\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n\r\n"
+    )
+    return header.encode("ascii") + raw
+
+
 def _http(status: int, reason: str, body: str) -> bytes:
     raw = body.encode("utf-8")
     header = (
@@ -404,6 +447,11 @@ async def _handle(reader, writer, app) -> None:
             token, since, intent = _filters(request.query)
             stats = await app.store.stats(since, intent)
             writer.write(_http(200, "OK", render_home(stats, token, intent)))
+        elif path in _REPORT_FILES:
+            fmt, content_type, filename = _REPORT_FILES[path]
+            _token, since, intent = _filters(request.query)
+            body = render_report(fmt, await app.store.report(since, intent))
+            writer.write(_download(content_type, filename, body))
         elif path.startswith("/session/"):
             session_id = path.removeprefix("/session/").strip("/")
             if not session_id.isalnum() or len(session_id) > 32:

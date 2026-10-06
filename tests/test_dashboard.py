@@ -48,6 +48,21 @@ async def test_dashboard_is_local_and_escapes(tmp_path):
         assert b"<script>" not in body
         assert b"<bad>" not in body
         assert b"200" in junk.split(b"\r\n", 1)[0]
+        assert b"/report.html" in page
+        assert "Скачать отчёт".encode() in page
+        downloaded = await _get(bot.bound["dashboard"], "/report.html")
+        head, _, report_body = downloaded.partition(b"\r\n\r\n")
+        assert b"200" in head.split(b"\r\n", 1)[0]
+        assert b"Content-Disposition: attachment;" in head
+        assert b"filename=\"honeybot-report.html\"" in head
+        assert b"<script>" not in report_body
+        assert b"&lt;script&gt;" in report_body
+        assert "Отчёт по атакам".encode() in report_body
+        exported = await _get(bot.bound["dashboard"], "/report.csv?since=24h&intent=miner")
+        assert b"text/csv" in exported
+        assert b"attachment;" in exported
+        missing = await _get(bot.bound["dashboard"], "/report.pdf")
+        assert b"404" in missing.split(b"\r\n", 1)[0]
     finally:
         await bot.stop()
 
