@@ -97,11 +97,25 @@ CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
 """
 
 
+_PROTOS = {"ssh", "http", "telnet", "ftp", "smtp", "redis"}
+
+
 def _clip(text: object, limit: int = 240) -> str:
     raw = "" if text is None else str(text)
     if len(raw) <= limit:
         return raw
     return raw[: limit - 3] + "..."
+
+
+def _panel_text(value: object) -> str:
+    raw = "" if value is None else str(value)
+    cleaned = "".join(ch for ch in raw if ch >= " " and ch != "\x7f")
+    return cleaned.strip()[:80]
+
+
+def _like_pattern(text: str) -> str:
+    cleaned = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{cleaned}%"
 
 
 def _bucket_width(since: str) -> int:
@@ -293,6 +307,26 @@ class Store:
     async def ip_view(self, ip: str) -> dict:
         return await self._call({"op": "ip_view", "ip": ip})
 
+    async def panel(
+        self,
+        since: str = "",
+        intent: str = "",
+        proto: str = "",
+        text: str = "",
+        open_only: bool = False,
+    ) -> dict:
+        """Срез для локальной панели. Секреты входа остаются в этом ответе и не попадают в report."""
+        return await self._call(
+            {
+                "op": "panel",
+                "since": since,
+                "intent": intent,
+                "proto": proto,
+                "text": text,
+                "open_only": bool(open_only),
+            }
+        )
+
     async def session_ids(self) -> list[str]:
         return list(await self._call({"op": "session_ids"}))
 
@@ -426,6 +460,14 @@ class Store:
             return data
         if name == "ip_view":
             return self._ip_view(op["ip"])
+        if name == "panel":
+            return self._panel(
+                op.get("since") or "",
+                op.get("intent") or "",
+                op.get("proto") or "",
+                op.get("text") or "",
+                bool(op.get("open_only")),
+            )
         if name == "session_ids":
             rows = self._conn.execute("SELECT id FROM sessions ORDER BY started_at").fetchall()
             return [row["id"] for row in rows]
@@ -587,7 +629,7 @@ class Store:
     def _bundle(self, session_id: str) -> dict:
         session = self._conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
         if session is None:
-            return {"session": None, "ip_info": {}, "auths": [], "commands": [], "http": []}
+            return {"session": None, "ip_info": {}, "auths": [], "commands": [], "http": [], "events": []}
         ip_info = self._conn.execute(
             "SELECT * FROM ip_info WHERE ip = ?",
             (session["ip"],),
@@ -604,12 +646,17 @@ class Store:
             "SELECT * FROM http_requests WHERE session_id = ? ORDER BY id",
             (session_id,),
         ).fetchall()
+        events = self._conn.execute(
+            "SELECT * FROM events WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
         return {
             "session": dict(session),
             "ip_info": dict(ip_info) if ip_info else {},
             "auths": [dict(row) for row in auths],
             "commands": [dict(row) for row in commands],
             "http": [dict(row) for row in http_rows],
+            "events": [dict(row) for row in events],
         }
 
     def _finish(self, op: dict) -> None:
@@ -1089,6 +1136,316 @@ class Store:
             bucket.append(_clip(row["line"]))
         return grouped
 
+    def _scope(
+        self,
+        since: str,
+        intent: str,
+        proto: str,
+        text: str,
+        open_only: bool,
+    ) -> tuple[str, list]:
+        extra: list[str] = []
+        extra_params: list = []
+        if proto:
+            extra.append("s.proto = ?")
+            extra_params.append(proto)
+        if open_only:
+            extra.append("s.ended_at IS NULL")
+        if text:
+            pattern = _like_pattern(text)
+            extra.append(
+                "s.id IN ("
+                "SELECT session_id FROM commands "
+                "WHERE raw LIKE ? ESCAPE '\\' OR normalized LIKE ? ESCAPE '\\' "
+                "UNION SELECT session_id FROM http_requests "
+                "WHERE path LIKE ? ESCAPE '\\' OR IFNULL(query, '') LIKE ? ESCAPE '\\' "
+                "UNION SELECT session_id FROM auth_attempts "
+                "WHERE IFNULL(username, '') LIKE ? ESCAPE '\\'"
+                ")"
+            )
+            extra_params.extend([pattern, pattern, pattern, pattern, pattern])
+        where, params = self._where(since, intent, extra)
+        params.extend(extra_params)
+        return where, params
+
+    def _panel(self, since: str, intent: str, proto: str, text: str, open_only: bool) -> dict:
+        assert self._conn is not None
+        proto = proto if proto in _PROTOS else ""
+        text = _panel_text(text)
+        where, params = self._scope(since, intent, proto, text, open_only)
+        totals = self._conn.execute(
+            f"SELECT COUNT(*) AS sessions, COUNT(DISTINCT s.ip) AS ips FROM sessions s{where}",
+            params,
+        ).fetchone()
+        open_where, open_params = self._scope(since, intent, proto, text, True)
+        opened = self._conn.execute(
+            f"SELECT COUNT(*) AS n FROM sessions s{open_where}",
+            open_params,
+        ).fetchone()
+        n_commands = self._conn.execute(
+            f"SELECT COUNT(*) AS n FROM commands c JOIN sessions s ON s.id = c.session_id{where}",
+            params,
+        ).fetchone()
+        n_http = self._conn.execute(
+            f"SELECT COUNT(*) AS n FROM http_requests h JOIN sessions s ON s.id = h.session_id{where}",
+            params,
+        ).fetchone()
+        n_auths = self._conn.execute(
+            f"SELECT COUNT(*) AS n FROM auth_attempts a JOIN sessions s ON s.id = a.session_id{where}",
+            params,
+        ).fetchone()
+        orgs = self._conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(i.org, ''), 'неизвестно') AS org,
+                   COALESCE(i.asn, '') AS asn,
+                   COUNT(DISTINCT s.ip) AS n
+            FROM sessions s
+            LEFT JOIN ip_info i ON i.ip = s.ip
+            {where}
+            GROUP BY org, asn
+            ORDER BY n DESC
+            LIMIT 12
+            """,
+            params,
+        ).fetchall()
+        ports = self._conn.execute(
+            f"""
+            SELECT s.dst_port AS port, s.proto AS proto, COUNT(*) AS n
+            FROM sessions s
+            {where}
+            GROUP BY s.dst_port, s.proto
+            ORDER BY n DESC
+            LIMIT 12
+            """,
+            params,
+        ).fetchall()
+        user_where, user_params = self._scope(since, intent, proto, text, open_only)
+        user_tail = "a.username IS NOT NULL AND a.username != ''"
+        if user_where:
+            user_where = user_where + " AND " + user_tail
+        else:
+            user_where = " WHERE " + user_tail
+        users = self._conn.execute(
+            f"""
+            SELECT a.username AS username, COUNT(*) AS n
+            FROM auth_attempts a
+            JOIN sessions s ON s.id = a.session_id
+            {user_where}
+            GROUP BY a.username
+            ORDER BY n DESC
+            LIMIT 12
+            """,
+            user_params,
+        ).fetchall()
+        intent_tail = "s.primary_intent IS NOT NULL AND s.primary_intent != ''"
+        intent_where = (where + " AND " + intent_tail) if where else (" WHERE " + intent_tail)
+        intents = self._conn.execute(
+            f"""
+            SELECT s.primary_intent AS intent, COUNT(*) AS n
+            FROM sessions s
+            {intent_where}
+            GROUP BY s.primary_intent
+            ORDER BY n DESC
+            """,
+            params,
+        ).fetchall()
+        commands = self._conn.execute(
+            f"""
+            SELECT c.normalized AS command, COUNT(*) AS n
+            FROM commands c
+            JOIN sessions s ON s.id = c.session_id
+            {where + " AND c.normalized IS NOT NULL AND c.normalized != ''" if where else " WHERE c.normalized IS NOT NULL AND c.normalized != ''"}
+            GROUP BY c.normalized
+            ORDER BY n DESC
+            LIMIT 15
+            """,
+            params,
+        ).fetchall()
+        paths = self._conn.execute(
+            f"""
+            SELECT h.path AS path, COUNT(*) AS n
+            FROM http_requests h
+            JOIN sessions s ON s.id = h.session_id
+            {where}
+            GROUP BY h.path
+            ORDER BY n DESC
+            LIMIT 15
+            """,
+            params,
+        ).fetchall()
+        countries = self._conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(i.country, ''), 'неизвестно') AS country,
+                   COUNT(DISTINCT s.ip) AS n
+            FROM sessions s
+            LEFT JOIN ip_info i ON i.ip = s.ip
+            {where}
+            GROUP BY country
+            ORDER BY n DESC
+            LIMIT 12
+            """,
+            params,
+        ).fetchall()
+        city_tail = "i.city IS NOT NULL AND i.city != ''"
+        city_where = (where + " AND " + city_tail) if where else (" WHERE " + city_tail)
+        cities = self._conn.execute(
+            f"""
+            SELECT i.city AS city, COUNT(DISTINCT s.ip) AS n
+            FROM sessions s
+            JOIN ip_info i ON i.ip = s.ip
+            {city_where}
+            GROUP BY i.city
+            ORDER BY n DESC
+            LIMIT 12
+            """,
+            params,
+        ).fetchall()
+        listed_tail = "i.spamhaus = 'listed'"
+        listed_where = (where + " AND " + listed_tail) if where else (" WHERE " + listed_tail)
+        listed = self._conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT s.ip) AS n
+            FROM sessions s
+            JOIN ip_info i ON i.ip = s.ip
+            {listed_where}
+            """,
+            params,
+        ).fetchone()
+        recent = self._conn.execute(
+            f"""
+            SELECT s.id, s.started_at, s.ended_at, s.ip, s.proto, s.dst_port, s.src_port,
+                   s.primary_intent, s.summary, s.username, s.auth_result, s.command_count,
+                   s.bytes_in, s.bytes_out,
+                   COALESCE(i.country, '') AS country,
+                   COALESCE(i.city, '') AS city,
+                   COALESCE(i.org, '') AS org,
+                   COALESCE(i.spamhaus, '') AS spamhaus,
+                   i.abuse_score AS abuse_score
+            FROM sessions s
+            LEFT JOIN ip_info i ON i.ip = s.ip
+            {where}
+            ORDER BY s.started_at DESC
+            LIMIT 40
+            """,
+            params,
+        ).fetchall()
+        log_commands = self._conn.execute(
+            f"""
+            SELECT c.ts AS ts, c.session_id AS session_id, c.raw AS raw, c.channel AS channel,
+                   c.exit_sent AS exit_sent, c.tags AS tags, s.ip AS ip, s.proto AS proto
+            FROM commands c
+            JOIN sessions s ON s.id = c.session_id
+            {where}
+            ORDER BY c.id DESC
+            LIMIT 80
+            """,
+            params,
+        ).fetchall()
+        log_http = self._conn.execute(
+            f"""
+            SELECT h.ts AS ts, h.session_id AS session_id, h.method AS method, h.path AS path,
+                   h.query AS query, h.status_sent AS status_sent, h.body_snippet AS body_snippet,
+                   h.tags AS tags, s.ip AS ip, s.proto AS proto
+            FROM http_requests h
+            JOIN sessions s ON s.id = h.session_id
+            {where}
+            ORDER BY h.id DESC
+            LIMIT 60
+            """,
+            params,
+        ).fetchall()
+        log_auths = self._conn.execute(
+            f"""
+            SELECT a.ts AS ts, a.session_id AS session_id, a.username AS username,
+                   a.secret AS secret, a.method AS method, a.fake_accepted AS fake_accepted,
+                   s.ip AS ip, s.proto AS proto
+            FROM auth_attempts a
+            JOIN sessions s ON s.id = a.session_id
+            {where}
+            ORDER BY a.id DESC
+            LIMIT 40
+            """,
+            params,
+        ).fetchall()
+        if proto or text or open_only or intent:
+            events = self._conn.execute(
+                f"""
+                SELECT e.ts AS ts, e.session_id AS session_id, e.kind AS kind, e.detail AS detail
+                FROM events e
+                JOIN sessions s ON s.id = e.session_id
+                {where}
+                ORDER BY e.id DESC
+                LIMIT 40
+                """,
+                params,
+            ).fetchall()
+        elif since:
+            events = self._conn.execute(
+                """
+                SELECT ts, session_id, kind, detail
+                FROM events
+                WHERE ts >= ?
+                ORDER BY id DESC
+                LIMIT 40
+                """,
+                (since,),
+            ).fetchall()
+        else:
+            events = self._conn.execute(
+                """
+                SELECT ts, session_id, kind, detail
+                FROM events
+                ORDER BY id DESC
+                LIMIT 40
+                """
+            ).fetchall()
+        if intent and intent != "unclassified":
+            unclassified: list = []
+        else:
+            plain_where, plain_params = self._scope(since, "", proto, text, open_only)
+            tail = "s.primary_intent = 'unclassified' AND c.normalized IS NOT NULL AND c.normalized != ''"
+            plain_sql = (plain_where + " AND " + tail) if plain_where else (" WHERE " + tail)
+            unclassified = self._conn.execute(
+                f"""
+                SELECT c.normalized AS command, COUNT(*) AS n
+                FROM commands c
+                JOIN sessions s ON s.id = c.session_id
+                {plain_sql}
+                GROUP BY c.normalized
+                ORDER BY n DESC
+                LIMIT 15
+                """,
+                plain_params,
+            ).fetchall()
+        return {
+            "sessions": totals["sessions"],
+            "open_sessions": opened["n"],
+            "unique_ips": totals["ips"],
+            "spamhaus_listed": listed["n"],
+            "n_commands": n_commands["n"],
+            "n_http": n_http["n"],
+            "n_auths": n_auths["n"],
+            "top_countries": [dict(row) for row in countries],
+            "top_cities": [dict(row) for row in cities],
+            "top_orgs": [dict(row) for row in orgs],
+            "top_ports": [dict(row) for row in ports],
+            "top_usernames": [dict(row) for row in users],
+            "top_intents": [dict(row) for row in intents],
+            "top_commands": [dict(row) for row in commands],
+            "top_paths": [dict(row) for row in paths],
+            "top_unclassified": [dict(row) for row in unclassified],
+            "recent": [dict(row) for row in recent],
+            "recent_events": [dict(row) for row in events],
+            "log_commands": [dict(row) for row in log_commands],
+            "log_http": [dict(row) for row in log_http],
+            "log_auths": [dict(row) for row in log_auths],
+            "db_bytes": self._size_bytes(),
+            "db_cap_bytes": self.max_db_mb * 1024 * 1024,
+            "recording": not self._over_cap(),
+            "since": since,
+            "intent": intent,
+        }
+
     def _ip_view(self, ip: str) -> dict:
         assert self._conn is not None
         info = self._conn.execute("SELECT * FROM ip_info WHERE ip = ?", (ip,)).fetchone()
@@ -1109,14 +1466,37 @@ class Store:
         ).fetchall()
         ids = [row["id"] for row in sessions]
         auths = []
+        commands = []
+        http_rows = []
         if ids:
             marks = ",".join("?" for _ in ids)
             auths = self._conn.execute(
                 f"""
-                SELECT session_id, username, secret, method, fake_accepted
+                SELECT session_id, ts, username, secret, method, fake_accepted
                 FROM auth_attempts
                 WHERE session_id IN ({marks})
-                ORDER BY id
+                ORDER BY id DESC
+                LIMIT 80
+                """,
+                ids,
+            ).fetchall()
+            commands = self._conn.execute(
+                f"""
+                SELECT session_id, ts, raw, channel, exit_sent, tags
+                FROM commands
+                WHERE session_id IN ({marks})
+                ORDER BY id DESC
+                LIMIT 80
+                """,
+                ids,
+            ).fetchall()
+            http_rows = self._conn.execute(
+                f"""
+                SELECT session_id, ts, method, path, query, status_sent, body_snippet, tags
+                FROM http_requests
+                WHERE session_id IN ({marks})
+                ORDER BY id DESC
+                LIMIT 40
                 """,
                 ids,
             ).fetchall()
@@ -1125,5 +1505,7 @@ class Store:
             "ip_info": dict(info) if info else {},
             "sessions": [dict(row) for row in sessions],
             "auths": [dict(row) for row in auths],
+            "commands": [dict(row) for row in commands],
+            "http": [dict(row) for row in http_rows],
             "total": total,
         }

@@ -50,6 +50,18 @@ async def test_dashboard_is_local_and_escapes(tmp_path):
         assert b"200" in junk.split(b"\r\n", 1)[0]
         assert b"/report.html" in page
         assert "Скачать отчёт".encode() in page
+        assert "Журнал".encode() in page
+        assert b"&lt;script&gt;" in page
+        feed = await _get(bot.bound["dashboard"], "/feed")
+        assert b"200" in feed.split(b"\r\n", 1)[0]
+        assert b"&lt;script&gt;" in feed
+        assert b"<script>" not in feed
+        hidden = await _get(bot.bound["dashboard"], "/?proto=ssh")
+        assert b"abc123def456" not in hidden.split(b"\r\n\r\n", 1)[-1]
+        searched = await _get(bot.bound["dashboard"], "/feed?q=%3Cscript%3E")
+        searched_body = searched.split(b"\r\n\r\n", 1)[-1]
+        assert b"<script>" not in searched_body
+        assert b"&lt;script&gt;" in searched_body
         downloaded = await _get(bot.bound["dashboard"], "/report.html")
         head, _, report_body = downloaded.partition(b"\r\n\r\n")
         assert b"200" in head.split(b"\r\n", 1)[0]
